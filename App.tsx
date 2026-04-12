@@ -6,7 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { SsfAirQualityScreen } from './components/SsfAirQualityScreen';
 import { useSsfAirQuality } from './hooks/useSsfAirQuality';
-import { ensureAnonymousSession } from './lib/supabase';
+import { ensureAnonymousSession } from './lib/ensureAnonymousSession';
 
 function AppContent() {
   const {

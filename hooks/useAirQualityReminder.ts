@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { aqiMeetsReminderThreshold, pm25ToAqi, reminderBandToAqiThreshold } from '../lib/aqiUtils';
+import { ensureAnonymousSession } from '../lib/ensureAnonymousSession';
 import { supabase } from '../lib/supabase';
 import {
   deleteUserNotificationSettings,
@@ -64,12 +65,8 @@ async function writeAlertToSupabase(
   lon: number,
   categoryIndex: number,
 ): Promise<void> {
-  const { data: userData, error: userError } = await supabase.auth.getUser();
-  if (userError || !userData.user) {
-    throw new Error(userError?.message ?? 'No authenticated user');
-  }
-
-  const userId = userData.user.id;
+  const user = await ensureAnonymousSession();
+  const userId = user.id;
   const projectId =
     Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
 
@@ -79,6 +76,7 @@ async function writeAlertToSupabase(
       projectId ? { projectId: String(projectId) } : undefined,
     );
     expoPushToken = tokenData.data;
+    console.log('EXPO TOKEN:', expoPushToken);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`Failed to get Expo push token: ${msg}`);
@@ -99,8 +97,7 @@ async function writeAlertToSupabase(
     expo_push_token: expoPushToken,
   };
 
-  const rows = await upsertUserNotificationSettings(payload);
-  console.log('[writeAlertToSupabase] upsert result:', rows);
+  await upsertUserNotificationSettings(payload);
 }
 
 export function useAirQualityReminder(
@@ -151,7 +148,12 @@ export function useAirQualityReminder(
       const ok = await requestNotifyPermission();
       if (!ok) return;
 
-      await writeAlertToSupabase(lat, lon, categoryIndex);
+      try {
+        await writeAlertToSupabase(lat, lon, categoryIndex);
+      } catch (e) {
+        console.error('SAVE FAILED:', e);
+        throw e;
+      }
 
       const next: AirQualityReminder = { lat, lon, categoryIndex };
       setReminderState(next);
