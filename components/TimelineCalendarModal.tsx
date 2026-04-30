@@ -28,6 +28,16 @@ export function TimelineCalendarModal({
   onPickRecordedTime,
   liveAverageAqi,
 }: TimelineCalendarModalProps) {
+  const latestTimelineTimeForToday = useMemo(() => {
+    const todayKey = dateKeyLocal(new Date());
+    for (let i = timelineTimesAsc.length - 1; i >= 0; i -= 1) {
+      const iso = timelineTimesAsc[i];
+      const d = new Date(iso);
+      if (!Number.isFinite(d.getTime())) continue;
+      if (dateKeyLocal(d) === todayKey) return iso;
+    }
+    return null;
+  }, [timelineTimesAsc]);
   const [loadingDayData, setLoadingDayData] = useState(false);
   const [daySummaries, setDaySummaries] = useState<Map<string, DaySummary>>(new Map());
   const [recordedTimeByDay, setRecordedTimeByDay] = useState<Map<string, string>>(new Map());
@@ -44,7 +54,6 @@ export function TimelineCalendarModal({
   const selectedIso = timelineTimesAsc[timelineIndex] ?? null;
   const selectedDateKey = useMemo(() => {
     if (!selectedIso) return null;
-    if (isWithinPastDay(selectedIso)) return dateKeyLocal(new Date());
     return dateKeyFromIso(selectedIso);
   }, [selectedIso]);
 
@@ -84,7 +93,7 @@ export function TimelineCalendarModal({
   }, [activeMonthKey, currentMonthKey]);
 
   const activeMonthDays = useMemo(() => enumerateDaysInMonth(activeMonthKey), [activeMonthKey]);
-  const todayKey = useMemo(() => dateKeyLocal(new Date()), []);
+  const todayKey = dateKeyLocal(new Date());
   const activeMonthDayIndex = useMemo(() => {
     const out = new Map<string, number>();
     activeMonthDays.forEach((day, index) => out.set(day, index));
@@ -362,10 +371,9 @@ export function TimelineCalendarModal({
               onMonthChange={(m) => setVisibleMonth(`${m.year}-${`${m.month}`.padStart(2, '0')}`)}
               onDayPress={(day) => {
                 const dayKey = day.dateString;
-                if (dayKey === todayKey && timelineTimesAsc.length > 0) {
-                  const latestTimelineTime = timelineTimesAsc[timelineTimesAsc.length - 1] ?? null;
-                  if (latestTimelineTime) {
-                    onPickRecordedTime(latestTimelineTime);
+                if (dayKey === todayKey) {
+                  if (latestTimelineTimeForToday) {
+                    onPickRecordedTime(latestTimelineTimeForToday);
                     onClose();
                   }
                   return;
@@ -377,8 +385,8 @@ export function TimelineCalendarModal({
                   return timelineTimesAsc[candidates[candidates.length - 1]] ?? null;
                 })();
                 const recordedFromTodayFallback =
-                  dayKey === todayKey && timelineTimesAsc.length > 0
-                    ? timelineTimesAsc[timelineTimesAsc.length - 1] ?? null
+                  dayKey === todayKey
+                    ? latestTimelineTimeForToday
                     : null;
                 const recordedTime = (() => {
                   if (recordedFromCalendar && recordedFromTimeline) {
@@ -513,13 +521,6 @@ function dateKeyFromIso(iso: string): string | null {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return null;
   return dateKeyLocal(d);
-}
-
-function isWithinPastDay(iso: string): boolean {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return false;
-  const now = Date.now();
-  return t <= now && t >= now - 24 * 60 * 60 * 1000;
 }
 
 async function loadCalendarRowsForMonth(monthKey: string): Promise<Array<{ aqi: number | null; pm25: number | null; time: string }>> {

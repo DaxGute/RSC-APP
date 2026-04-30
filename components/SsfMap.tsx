@@ -1,17 +1,20 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import Mapbox from '@rnmapbox/maps';
 import type { FeatureCollection, Point } from 'geojson';
-import { LayoutChangeEvent, StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { CurrentKrigingRow } from '../lib/database.types';
 import { SSF_BBOX } from '../lib/constants/ssf';
-import { pm25ToAqi } from '../lib/aqiUtils';
-import { buildKrigingHeatmapPoints } from '../lib/krigingHeatmapPoints';
+import { pm25BreakpointCategory, pm25ToAqi } from '../lib/aqiUtils';
 import type { MapRegion } from '../lib/mapRegionFromData';
 import type { SensorPoint } from '../lib/sensorTypes';
+import { KrigingHeatmapLayer } from './KrigingHeatmapLayer';
 
 export type MapSelectDetail = {
   touchInBottomBand: boolean;
+  sensorIndex?: number;
+  sensorSource?: string;
+  sensorName?: string | null;
 };
 
 export type SsfMapProps = {
@@ -29,6 +32,12 @@ if (mapboxToken) {
   Mapbox.setAccessToken(mapboxToken);
 }
 
+const DEFAULT_ZOOM_LEVEL = 12;
+const MIN_ZOOM_FACTOR = 0.5;
+const MAX_ZOOM_FACTOR = 3;
+const MIN_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MIN_ZOOM_FACTOR;
+const MAX_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MAX_ZOOM_FACTOR;
+
 export function SsfMap({
   sensors,
   kriging,
@@ -38,46 +47,28 @@ export function SsfMap({
   onSelectCoordinate,
 }: SsfMapProps) {
   const wrapRef = useRef<View>(null);
-  const [layout, setLayout] = useState({ w: 0, h: 0 });
-
-  const heatmapPoints = useMemo(
-    () => buildKrigingHeatmapPoints(kriging, mapRegion),
-    [kriging, mapRegion],
-  );
-
-  const heatmapGeoJson = useMemo(() => {
-    const shape: FeatureCollection<Point, { weight: number; opacity: number }> = {
-      type: 'FeatureCollection',
-      features: heatmapPoints.map((p, idx) => ({
-        type: 'Feature' as const,
-        id: `k-${idx}`,
-        geometry: {
-          type: 'Point' as const,
-          coordinates: [p.longitude, p.latitude],
-        },
-        properties: {
-          weight: Math.round(p.weight),
-          opacity: Math.max(0.62, Math.min(1, p.varianceOpacity * (0.6 + 0.4 * p.intensityOpacity))),
-        },
-      })),
-    };
-    return shape;
-  }, [heatmapPoints]);
+  const lastSensorTapMsRef = useRef(0);
 
   const sensorGeoJson = useMemo(() => {
-    const shape: FeatureCollection<Point, { sensor_index: number; pm25: number; aqi: number }> = {
+    const shape: FeatureCollection<
+      Point,
+      { sensor_index: number; source: string; name: string | null; pm25: number; aqi: number; color: string }
+    > = {
       type: 'FeatureCollection',
       features: sensors.map((s) => ({
         type: 'Feature' as const,
-        id: `s-${s.sensorIndex}`,
+        id: `s-${s.source}-${s.sensorIndex}`,
         geometry: {
           type: 'Point' as const,
           coordinates: [s.longitude, s.latitude],
         },
         properties: {
           sensor_index: s.sensorIndex,
+          source: s.source,
+          name: s.name ?? null,
           pm25: s.pm25,
           aqi: pm25ToAqi(s.pm25) ?? 0,
+          color: pm25BreakpointCategory(s.pm25).bg,
         },
       })),
     };
@@ -102,33 +93,15 @@ export function SsfMap({
     return shape;
   }, [selected]);
 
-  const reminderGeoJson = useMemo(() => {
-    if (!reminderLocation) return null;
-    const shape: FeatureCollection<Point> = {
-      type: 'FeatureCollection',
-      features: [
-        {
-          type: 'Feature',
-          geometry: {
-            type: 'Point',
-            coordinates: [reminderLocation.longitude, reminderLocation.latitude],
-          },
-          properties: {},
-        },
-      ],
-    };
-    return shape;
-  }, [reminderLocation]);
-
-  const onLayout = useCallback((e: LayoutChangeEvent) => {
-    const { width, height } = e.nativeEvent.layout;
-    setLayout({ w: width, h: height });
-  }, []);
-
   const handlePress = useCallback(
-    (lat: number, lon: number, pageY: number | null) => {
+    (
+      lat: number,
+      lon: number,
+      pageY: number | null,
+      sensorDetail?: { sensorIndex?: number; sensorSource?: string; sensorName?: string | null },
+    ) => {
       const finish = (touchInBottomBand: boolean) => {
-        onSelectCoordinate(lat, lon, { touchInBottomBand });
+        onSelectCoordinate(lat, lon, { touchInBottomBand, ...sensorDetail });
       };
 
       const wrap = wrapRef.current;
@@ -146,6 +119,8 @@ export function SsfMap({
 
   const handleMapPress = useCallback(
     (event: any) => {
+      // Prevent the immediate map click after a sensor click from overriding sensor selection.
+      if (Date.now() - lastSensorTapMsRef.current < 250) return;
       const coords = event?.geometry?.coordinates;
       if (!Array.isArray(coords) || coords.length < 2) return;
       const [lon, lat] = coords;
@@ -161,15 +136,36 @@ export function SsfMap({
       const coords = feature?.geometry?.type === 'Point' ? feature.geometry.coordinates : null;
       if (!coords || coords.length < 2) return;
       const [lon, lat] = coords;
+      const rawSensorIndex = feature?.properties?.sensor_index;
+      const sensorIndex =
+        typeof rawSensorIndex === 'number'
+          ? rawSensorIndex
+          : typeof rawSensorIndex === 'string'
+            ? Number.parseInt(rawSensorIndex, 10)
+            : undefined;
+      const sensorSource =
+        typeof feature?.properties?.source === 'string' ? feature.properties.source : undefined;
+      const sensorName =
+        typeof feature?.properties?.name === 'string' ? feature.properties.name : null;
       const maybePageY =
         (event as unknown as { properties?: { screenPointY?: number } }).properties?.screenPointY ?? null;
-      handlePress(lat, lon, maybePageY);
+      lastSensorTapMsRef.current = Date.now();
+      handlePress(lat, lon, maybePageY, {
+        sensorIndex: Number.isFinite(sensorIndex) ? sensorIndex : undefined,
+        sensorSource,
+        sensorName,
+      });
     },
     [handlePress],
   );
 
+  const handleReminderPress = useCallback(() => {
+    if (!reminderLocation) return;
+    handlePress(reminderLocation.latitude, reminderLocation.longitude, null);
+  }, [handlePress, reminderLocation]);
+
   return (
-    <View ref={wrapRef} style={styles.wrap} onLayout={onLayout}>
+    <View ref={wrapRef} style={styles.wrap}>
       <Mapbox.MapView
         style={styles.map}
         styleURL={Mapbox.StyleURL.Street}
@@ -181,67 +177,24 @@ export function SsfMap({
         onPress={handleMapPress}
       >
         <Mapbox.Camera
-          zoomLevel={12}
+          zoomLevel={DEFAULT_ZOOM_LEVEL}
           centerCoordinate={[mapRegion.longitude, mapRegion.latitude]}
           maxBounds={{
             ne: [SSF_BBOX.seLon, SSF_BBOX.nwLat],
             sw: [SSF_BBOX.nwLon, SSF_BBOX.seLat],
           }}
-          minZoomLevel={10.8}
-          maxZoomLevel={14.5}
+          minZoomLevel={MIN_ZOOM_LEVEL}
+          maxZoomLevel={MAX_ZOOM_LEVEL}
         />
 
-        {heatmapGeoJson.features.length > 0 ? (
-          <Mapbox.ShapeSource id="kriging-heat-source" shape={heatmapGeoJson}>
-            <Mapbox.HeatmapLayer
-              id="kriging-heat-layer"
-              style={{
-                heatmapWeight: ['interpolate', ['linear'], ['get', 'weight'], 1, 0.1, 500, 1],
-                heatmapIntensity: 1,
-                heatmapRadius: ['interpolate', ['linear'], ['zoom'], 10, 18, 14, 28],
-                heatmapOpacity: 0.75,
-                heatmapColor: [
-                  'interpolate',
-                  ['linear'],
-                  ['heatmap-density'],
-                  0,
-                  'rgba(0, 228, 0, 0)',
-                  0.2,
-                  'rgba(255, 255, 0, 0.45)',
-                  0.4,
-                  'rgba(255, 126, 0, 0.6)',
-                  0.6,
-                  'rgba(255, 0, 0, 0.7)',
-                  0.8,
-                  'rgba(143, 63, 151, 0.75)',
-                  1,
-                  'rgba(126, 0, 35, 0.82)',
-                ],
-              }}
-            />
-          </Mapbox.ShapeSource>
-        ) : null}
+        <KrigingHeatmapLayer kriging={kriging} mapRegion={mapRegion} sensors={sensors} />
 
         <Mapbox.ShapeSource id="sensors" shape={sensorGeoJson} onPress={handleSensorPress}>
           <Mapbox.CircleLayer
             id="sensor-points"
             style={{
               circleRadius: 7,
-              circleColor: [
-                'step',
-                ['get', 'aqi'],
-                '#00e400',
-                50,
-                '#ffff00',
-                100,
-                '#ff7e00',
-                150,
-                '#ff0000',
-                200,
-                '#8f3f97',
-                300,
-                '#7e0023',
-              ],
+              circleColor: ['get', 'color'],
               circleStrokeWidth: 1,
               circleStrokeColor: '#ffffff',
             }}
@@ -254,7 +207,7 @@ export function SsfMap({
               id="selected-point-layer"
               style={{
                 circleRadius: 9,
-                circleColor: '#ffffff',
+                circleColor: 'rgba(255,255,255,0)',
                 circleStrokeWidth: 3,
                 circleStrokeColor: '#0f172a',
               }}
@@ -262,18 +215,16 @@ export function SsfMap({
           </Mapbox.ShapeSource>
         ) : null}
 
-        {reminderGeoJson ? (
-          <Mapbox.ShapeSource id="reminder-point" shape={reminderGeoJson}>
-            <Mapbox.CircleLayer
-              id="reminder-point-layer"
-              style={{
-                circleRadius: 6,
-                circleColor: '#facc15',
-                circleStrokeWidth: 2,
-                circleStrokeColor: '#111827',
-              }}
-            />
-          </Mapbox.ShapeSource>
+        {reminderLocation ? (
+          <Mapbox.PointAnnotation
+            id="reminder-point-annotation"
+            coordinate={[reminderLocation.longitude, reminderLocation.latitude]}
+            onSelected={handleReminderPress}
+          >
+            <Pressable onPress={handleReminderPress} hitSlop={14} style={styles.reminderIconWrap}>
+              <Text style={styles.reminderIcon}>🔔</Text>
+            </Pressable>
+          </Mapbox.PointAnnotation>
         ) : null}
       </Mapbox.MapView>
     </View>
@@ -283,4 +234,17 @@ export function SsfMap({
 const styles = StyleSheet.create({
   wrap: { flex: 1, minHeight: 0, width: '100%', alignSelf: 'stretch', backgroundColor: '#dbeafe' },
   map: { flex: 1 },
+  reminderIconWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  reminderIcon: {
+    fontSize: 24,
+    lineHeight: 26,
+    textShadowColor: 'rgba(15, 23, 42, 0.9)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
 });

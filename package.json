@@ -14,6 +14,7 @@
     "@rnmapbox/maps": "^10.3.0",
     "@supabase/supabase-js": "^2.103.0",
     "babel-preset-expo": "~54.0.10",
+    "d3-contour": "^4.0.2",
     "expo": "~54.0.33",
     "expo-linear-gradient": "~15.0.8",
     "expo-notifications": "~0.32.16",
@@ -30,6 +31,7 @@
     "react-native-worklets": "0.5.1"
   },
   "devDependencies": {
+    "@types/d3-contour": "^3.0.6",
     "@types/react": "~19.1.0",
     "@types/react-native": "^0.72.8",
     "typescript": "~5.9.2"

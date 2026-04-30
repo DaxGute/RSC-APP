@@ -18,6 +18,7 @@ import { coordinateInRegion, type MapRegion } from '../lib/mapRegionFromData';
 import {
   EPA_AQI_CATEGORY_BANDS,
   aqiCategory,
+  pm25BreakpointCategory,
   pm25ToAqi,
   type AqiCategory,
   type Pm25Category,
@@ -322,6 +323,8 @@ function HealthStatsTooltipBubble({
 
 export type AqiPanelProps = {
   selected: { lat: number; lon: number } | null;
+  selectedLabel?: string | null;
+  selectedSensor?: { sensorIndex: number; source?: string } | null;
   loading: boolean;
   error: FetchError | null;
   sensors: SensorPoint[];
@@ -358,6 +361,8 @@ export type AqiPanelProps = {
 
 export function AqiPanel({
   selected,
+  selectedLabel = null,
+  selectedSensor = null,
   loading,
   error,
   sensors,
@@ -455,7 +460,20 @@ export function AqiPanel({
       return { kind: 'msg' as const, msg: 'No sensor or grid data yet.' };
     }
 
-    const { predPm25, predPm25Category, closest } = computeSsfSelection(lat, lon, sensors, kriging);
+    const base = computeSsfSelection(lat, lon, sensors, kriging);
+    const exactSelectedSensor =
+      selectedSensor != null
+        ? sensors.find(
+            (s) =>
+              s.sensorIndex === selectedSensor.sensorIndex &&
+              (selectedSensor.source == null || s.source === selectedSensor.source),
+          ) ?? sensors.find((s) => s.sensorIndex === selectedSensor.sensorIndex)
+        : null;
+    const predPm25 = exactSelectedSensor?.pm25 ?? base.predPm25;
+    const closest = exactSelectedSensor
+      ? { lat: exactSelectedSensor.latitude, lon: exactSelectedSensor.longitude, pm25: exactSelectedSensor.pm25, distKm: 0 }
+      : base.closest;
+    const predPm25Category = pm25BreakpointCategory(predPm25);
     const predAqi = pm25ToAqi(predPm25);
     const aqiCat = aqiCategory(predAqi);
 
@@ -469,7 +487,7 @@ export function AqiPanel({
       aqiCat,
       closest,
     };
-  }, [selected, loading, error, sensors, kriging, mapRegion]);
+  }, [selected, loading, error, sensors, kriging, mapRegion, selectedSensor]);
 
   const showReminderButton = Boolean(onReminderPickThreshold && panel.kind === 'ok');
 
@@ -532,6 +550,7 @@ export function AqiPanel({
             <View style={styles.sheetBody}>
               <CompactPanelBody
                 panel={panel}
+                selectedLabel={selectedLabel}
                 metric={metric}
                 setMetric={setMetric}
                 heroAccent={heroAccent}
@@ -641,7 +660,7 @@ export function AqiPanel({
                 <View style={styles.modernTopLeft}>
                   <Text style={styles.eyebrow}>Air quality estimate</Text>
                   <Text style={styles.coords}>
-                    {panel.lat.toFixed(5)}, {panel.lon.toFixed(5)}
+                    {selectedLabel ?? `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
                   </Text>
                 </View>
               </View>
@@ -929,6 +948,7 @@ type PanelState =
 
 function CompactPanelBody({
   panel,
+  selectedLabel,
   metric,
   setMetric,
   heroAccent,
@@ -938,6 +958,7 @@ function CompactPanelBody({
   healthHelpAnchorRef,
 }: {
   panel: PanelState;
+  selectedLabel?: string | null;
   metric: Metric;
   setMetric: (m: Metric) => void;
   heroAccent: string;
@@ -984,7 +1005,7 @@ function CompactPanelBody({
     <>
       <View style={styles.compactCoordsRow}>
         <Text style={styles.compactCoords} numberOfLines={1}>
-          {ph ? '-, -.' : `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
+          {ph ? '-, -.' : selectedLabel ?? `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
         </Text>
       </View>
 

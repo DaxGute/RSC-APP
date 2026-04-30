@@ -3,10 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVAL_MS } from '../lib/constants/ssf';
 import type { ClarityRow, CurrentKrigingRow, DailySensorAqiRow, PurpleAirRow } from '../lib/database.types';
 import {
-  fetchCurrentSensorReadings,
   fetchDistinctPipelineTimes,
   fetchDailySensorAqiAtRecordedTime,
   fetchDailySensorAqiBetweenRecordedTimes,
+  fetchSensorReadingsBetweenRecordedTimes,
   fetchSensorReadingsAtRecordedTime,
   type FetchError,
 } from '../lib/fetchAirQuality';
@@ -50,6 +50,7 @@ function toSensorPoints(
     if (r.pm25 == null || !Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) continue;
     out.push({
       sensorIndex: r.sensor_index,
+      name: r.name ?? null,
       latitude: r.latitude,
       longitude: r.longitude,
       pm25: r.pm25,
@@ -61,6 +62,7 @@ function toSensorPoints(
     if (r.pm25 == null || !Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) continue;
     out.push({
       sensorIndex: r.sensor_index,
+      name: r.name ?? null,
       latitude: r.latitude,
       longitude: r.longitude,
       pm25: r.pm25,
@@ -77,6 +79,7 @@ function toDailySensorPoints(rows: DailySensorAqiRow[] | null): SensorPoint[] {
     if (r.pm25 == null || !Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) continue;
     out.push({
       sensorIndex: r.sensor_index,
+      name: r.name ?? null,
       latitude: r.latitude,
       longitude: r.longitude,
       pm25: r.pm25,
@@ -99,19 +102,30 @@ function groupDailyRowsByTime(rows: DailySensorAqiRow[]): Map<string, DailySenso
   return grouped;
 }
 
+function groupSensorsByRecordedTime(
+  purple: PurpleAirRow[] | null,
+  clarity: ClarityRow[] | null,
+): Map<string, SensorPoint[]> {
+  const grouped = new Map<string, SensorPoint[]>();
+  const append = (rows: SensorPoint[]) => {
+    for (const row of rows) {
+      if (!row.time) continue;
+      const existing = grouped.get(row.time);
+      if (existing) existing.push(row);
+      else grouped.set(row.time, [row]);
+    }
+  };
+  append(toSensorPoints(purple, null));
+  append(toSensorPoints(null, clarity));
+  return grouped;
+}
+
 function mergeTimesAsc(prev: string[], additions: readonly string[]): string[] {
   const s = new Set(prev);
   for (const a of additions) {
     if (a) s.add(a);
   }
   return Array.from(s).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-}
-
-function mergeTimesAscWithNulls(prev: string[], additions: (string | null)[]): string[] {
-  return mergeTimesAsc(
-    prev,
-    additions.filter((x): x is string => Boolean(x)),
-  );
 }
 
 function trimTimesToRollingDay(timesAsc: string[], preserveIso?: string | null): string[] {
@@ -149,6 +163,19 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
   const timelineInitRef = useRef(false);
   const pinnedHistoricalTimeRef = useRef<string | null>(null);
   const mounted = useRef(true);
+
+  const recomputeHistoricalKriging = useCallback((sensorRows: SensorPoint[], recordedTime: string) => {
+    if (sensorRows.length === 0) return [];
+    return recomputeKrigingFromSensors(sensorRows, recordedTime, {
+      latSteps: HISTORICAL_KRIGING_GRID_STEPS,
+      lonSteps: HISTORICAL_KRIGING_GRID_STEPS,
+      maxNeighbors: HISTORICAL_KRIGING_NEIGHBORS,
+    });
+  }, []);
+
+  useEffect(() => {
+    latestKrigingRef.current = kriging;
+  }, [kriging]);
 
   useEffect(() => {
     mounted.current = true;
@@ -191,11 +218,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
         if (sensorRows.length === 0) continue;
         const snapshot: HistoricalSnapshot = {
           sensors: sensorRows,
-          kriging: recomputeKrigingFromSensors(sensorRows, t, {
-            latSteps: HISTORICAL_KRIGING_GRID_STEPS,
-            lonSteps: HISTORICAL_KRIGING_GRID_STEPS,
-            maxNeighbors: HISTORICAL_KRIGING_NEIGHBORS,
-          }),
+          kriging: recomputeHistoricalKriging(sensorRows, t),
           insufficientData: false,
         };
         historicalCacheRef.current.set(t, snapshot);
@@ -220,54 +243,66 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     setError(null);
     setInitialLoadProgress(0.05);
     try {
-      const sensorsRes = await fetchCurrentSensorReadings();
+      const now = new Date();
+      const dayStart = new Date(now);
+      dayStart.setHours(0, 0, 0, 0);
+      const fromIso = dayStart.toISOString();
+      const toIso = now.toISOString();
+      const sensorsRes = await fetchSensorReadingsBetweenRecordedTimes(fromIso, toIso);
       if (!mounted.current) return;
       setInitialLoadProgress(0.9);
 
       const pa = sensorsRes.purpleAir ?? [];
       const cl = sensorsRes.clarity ?? [];
-      const rt = sensorsRes.recordedTimes;
       const sensorsErr = sensorsRes.error;
-      setError(sensorsErr ?? null);
+      let liveKriging: CurrentKrigingRow[] = [];
 
       // Preserve whichever feed succeeds so the map can still render partially.
-      if (!sensorsErr) {
-        const sensorPoints = toSensorPoints(pa, cl);
-        const recordedTime = rt.purpleAir ?? rt.clarity ?? new Date().toISOString();
+      if (!sensorsErr || pa.length > 0 || cl.length > 0) {
+        const groupedByTime = groupSensorsByRecordedTime(pa, cl);
+        const times = Array.from(groupedByTime.keys()).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+        const latestTime = times[times.length - 1] ?? null;
+        const sensorPoints = latestTime ? (groupedByTime.get(latestTime) ?? []) : [];
+        // Keep live and historical snapshots on the same kriging pipeline.
+        liveKriging = recomputeHistoricalKriging(sensorPoints, latestTime ?? new Date().toISOString());
+        setError(sensorsErr ?? null);
         setPurpleAir(pa);
         setClarity(cl);
         setSensors(sensorPoints);
-        setKriging(recomputeKrigingFromSensors(sensorPoints, recordedTime));
+        setKriging(liveKriging);
+        for (const t of times) {
+          const rows = groupedByTime.get(t) ?? [];
+          if (rows.length === 0) continue;
+          const snapshot: HistoricalSnapshot = {
+            sensors: rows,
+            kriging: recomputeHistoricalKriging(rows, t),
+            insufficientData: false,
+          };
+          historicalCacheRef.current.set(t, snapshot);
+        }
+        setTimelineTimesAsc((prev) => {
+          const merged = trimTimesToRollingDay(mergeTimesAsc(prev, times), pinnedHistoricalTimeRef.current);
+          if (merged.length > 0) timelineInitRef.current = true;
+          setTimelineIndex((idx) => {
+            if (merged.length === 0) return 0;
+            if (prev.length === 0) return merged.length - 1;
+            if (idx === prev.length - 1) return merged.length - 1;
+            return Math.min(idx, merged.length - 1);
+          });
+          return merged;
+        });
       } else {
+        setError(sensorsErr ?? null);
         setPurpleAir([]);
         setClarity([]);
         setSensors([]);
         setKriging([]);
       }
-
-      setTimelineTimesAsc((prev) => {
-        const merged = trimTimesToRollingDay(
-          mergeTimesAscWithNulls(prev, [rt.purpleAir, rt.clarity]),
-          pinnedHistoricalTimeRef.current,
-        );
-        if (merged.length > 0) timelineInitRef.current = true;
-        setTimelineIndex((idx) => {
-          if (merged.length === 0) return 0;
-          if (prev.length === 0) return merged.length - 1;
-          if (idx === prev.length - 1) return merged.length - 1;
-          return Math.min(idx, merged.length - 1);
-        });
-        return merged;
-      });
       setInitialLoadProgress(1);
     } finally {
       if (mounted.current) setLoading(false);
     }
   }, []);
-
-  useEffect(() => {
-    latestKrigingRef.current = kriging;
-  }, [kriging]);
 
   const viewingLive = useMemo(
     () => timelineTimesAsc.length > 0 && timelineIndex === timelineTimesAsc.length - 1,
@@ -302,8 +337,16 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     const t = timelineTimesAsc[timelineIndex];
     const cached = historicalCacheRef.current.get(t);
     if (cached) {
-      setHistoricalDisplay(cached);
-      setInsufficientData(cached.insufficientData);
+      // Recompute on each selection so switching away from live always refreshes
+      // historical kriging with the configured 20x20 surface.
+      const recomputed = recomputeHistoricalKriging(cached.sensors, t);
+      const refreshed: HistoricalSnapshot = {
+        sensors: cached.sensors,
+        kriging: recomputed.length > 0 ? recomputed : cached.kriging,
+        insufficientData: cached.insufficientData,
+      };
+      setHistoricalDisplay(refreshed);
+      setInsufficientData(refreshed.insufficientData);
       setTimelineLoading(false);
       return;
     }
@@ -320,14 +363,8 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
       if (cancelled || !mounted.current) return;
       const dailySensors = toDailySensorPoints(dailyRes.data);
       const sensorRows = dailySensors.length > 0 ? dailySensors : toSensorPoints(sRes.purpleAir, sRes.clarity);
-      const krigingRows =
-        sensorRows.length > 0
-          ? recomputeKrigingFromSensors(sensorRows, t, {
-              latSteps: HISTORICAL_KRIGING_GRID_STEPS,
-              lonSteps: HISTORICAL_KRIGING_GRID_STEPS,
-              maxNeighbors: HISTORICAL_KRIGING_NEIGHBORS,
-            })
-          : latestKrigingRef.current;
+      const recomputed = recomputeHistoricalKriging(sensorRows, t);
+      const krigingRows = recomputed.length > 0 ? recomputed : latestKrigingRef.current;
       // A single sensor datapoint is enough to consider the timestamp usable.
       // Kriging may be missing for sparse historical slots, but the snapshot is still informative.
       const isInsufficient = sensorRows.length === 0;
@@ -355,7 +392,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     return () => {
       cancelled = true;
     };
-  }, [timelineIndex, timelineTimesAsc]);
+  }, [recomputeHistoricalKriging, timelineIndex, timelineTimesAsc]);
 
   const displaySensors = viewingLive ? sensors : (historicalDisplay?.sensors ?? []);
   const displayKriging = viewingLive ? kriging : (historicalDisplay?.kriging ?? []);

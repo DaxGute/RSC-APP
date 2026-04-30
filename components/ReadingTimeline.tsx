@@ -78,7 +78,6 @@ export type ReadingTimelineProps = {
   loading?: boolean;
   onPickRecordedTime?: (recordedTime: string) => void;
   liveAverageAqi?: number | null;
-  todayRecordedTime?: string | null;
   timelineScrollable?: boolean;
 };
 
@@ -90,7 +89,6 @@ export function ReadingTimeline({
   loading = false,
   onPickRecordedTime,
   liveAverageAqi = null,
-  todayRecordedTime = null,
   timelineScrollable = true,
 }: ReadingTimelineProps) {
   const calendarTimes = calendarTimesAsc ?? timesAsc;
@@ -122,12 +120,6 @@ export function ReadingTimeline({
     if (!Number.isFinite(selectedDate.getTime())) return true;
     return dateKeyLocal(selectedDate) === dateKeyLocal(new Date());
   }, [selectedIso]);
-  const showTodayButton = useMemo(() => {
-    if (!onPickRecordedTime || !selectedIso) return false;
-    const selectedDate = new Date(selectedIso);
-    if (!Number.isFinite(selectedDate.getTime())) return false;
-    return dateKeyLocal(selectedDate) !== dateKeyLocal(new Date());
-  }, [onPickRecordedTime, selectedIso]);
   const dateButtonLabel = useMemo(() => formatDateButtonLabel(selectedIso), [selectedIso]);
 
   const arcLabels = useMemo(() => {
@@ -312,22 +304,6 @@ export function ReadingTimeline({
             </Animated.View>
           ) : null}
         </View>
-        {showTodayButton ? (
-          <Pressable
-            onPress={() => {
-              if (onPickRecordedTime && todayRecordedTime) {
-                onPickRecordedTime(todayRecordedTime);
-                return;
-              }
-              onChangeIndex(maxIdx);
-            }}
-            style={({ pressed }) => [styles.todayButton, pressed && styles.calendarButtonPressed]}
-            accessibilityRole="button"
-            accessibilityLabel="Jump to latest reported readings"
-          >
-            <Text style={styles.todayButtonText}>Today</Text>
-          </Pressable>
-        ) : null}
         <View style={styles.arcScrollerShell}>
           <View style={styles.arcGestureLayer} {...(timelineScrollable ? radialPanResponder.panHandlers : {})} />
           {arcMarkers.map((marker) => (
@@ -468,30 +444,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.2,
     color: '#334155',
-  },
-  todayButton: {
-    position: 'absolute',
-    left: 136,
-    top: 126,
-    minHeight: 30,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1e3a8a',
-    borderWidth: 1,
-    borderColor: '#1d4ed8',
-    shadowColor: '#020617',
-    shadowOpacity: 0.2,
-    shadowRadius: 9,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
-  },
-  todayButtonText: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-    color: '#ffffff',
   },
   arcScrollerShell: {
     position: 'absolute',

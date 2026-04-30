@@ -5,6 +5,7 @@
 
 export interface PurpleAirRow {
   sensor_index: number;
+  name: string | null;
   latitude: number;
   longitude: number;
   pm25: number | null;
@@ -19,6 +20,7 @@ export interface PurpleAirRow {
 
 export interface ClarityRow {
   sensor_index: number;
+  name: string | null;
   latitude: number;
   longitude: number;
   pm25: number | null;
@@ -34,7 +36,7 @@ export interface CurrentKrigingRow {
   longitude: number;
   pm25: number | null;
   aqi: number | null;
-  /** Kriging prediction variance (column name must match your table). */
+  /** Kriging prediction variance (`variance` in DB, aliased to this app field). */
   kriging_variance: number | null;
   /** When this grid cell was generated (ISO 8601). */
   time: string;

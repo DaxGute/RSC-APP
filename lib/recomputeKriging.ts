@@ -8,7 +8,18 @@ const EPS_DEG = 1e-6;
 const IDW_POWER = 2;
 
 type PreparedSensor = { lat: number; lon: number; pm25: number };
-type RecomputeOptions = { latSteps?: number; lonSteps?: number; maxNeighbors?: number };
+export type KrigingBounds = {
+  southLat: number;
+  northLat: number;
+  westLon: number;
+  eastLon: number;
+};
+type RecomputeOptions = {
+  latSteps?: number;
+  lonSteps?: number;
+  maxNeighbors?: number;
+  bounds?: KrigingBounds;
+};
 
 function estimatePm25At(
   lat: number,
@@ -83,15 +94,23 @@ export function recomputeKrigingFromSensors(
   const latSteps = Math.max(2, Math.floor(options?.latSteps ?? DEFAULT_GRID_LAT_STEPS));
   const lonSteps = Math.max(2, Math.floor(options?.lonSteps ?? DEFAULT_GRID_LON_STEPS));
   const maxNeighbors = Math.max(1, Math.min(prepared.length, Math.floor(options?.maxNeighbors ?? 8)));
-  const latStep = (SSF_BBOX.nwLat - SSF_BBOX.seLat) / (latSteps - 1);
-  const lonStep = (SSF_BBOX.seLon - SSF_BBOX.nwLon) / (lonSteps - 1);
+  const bounds = options?.bounds;
+  const southLat = bounds?.southLat ?? SSF_BBOX.seLat;
+  const northLat = bounds?.northLat ?? SSF_BBOX.nwLat;
+  const westLon = bounds?.westLon ?? SSF_BBOX.nwLon;
+  const eastLon = bounds?.eastLon ?? SSF_BBOX.seLon;
+  const latStep = (northLat - southLat) / (latSteps - 1);
+  const lonStep = (eastLon - westLon) / (lonSteps - 1);
+  const rowKey = (lat: number, lon: number) => `${lat.toFixed(6)},${lon.toFixed(6)}`;
+  const seen = new Set<string>();
 
   for (let i = 0; i < latSteps; i++) {
-    const lat = SSF_BBOX.seLat + i * latStep;
+    const lat = southLat + i * latStep;
     for (let j = 0; j < lonSteps; j++) {
-      const lon = SSF_BBOX.nwLon + j * lonStep;
+      const lon = westLon + j * lonStep;
       const estimate = estimatePm25At(lat, lon, prepared, maxNeighbors);
       if (!estimate) continue;
+      seen.add(rowKey(lat, lon));
       rows.push({
         latitude: lat,
         longitude: lon,
@@ -101,6 +120,20 @@ export function recomputeKrigingFromSensors(
         time: recordedTime,
       });
     }
+  }
+
+  // Ensure exact sensor anchors exist in the output surface.
+  for (const sensor of prepared) {
+    const key = rowKey(sensor.lat, sensor.lon);
+    if (seen.has(key)) continue;
+    rows.push({
+      latitude: sensor.lat,
+      longitude: sensor.lon,
+      pm25: sensor.pm25,
+      aqi: null,
+      kriging_variance: 0,
+      time: recordedTime,
+    });
   }
   return rows;
 }

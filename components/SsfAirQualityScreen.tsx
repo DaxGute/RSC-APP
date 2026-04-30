@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image, StyleSheet, Text, View } from 'react-native';
+import { Alert, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { CurrentKrigingRow } from '../lib/database.types';
@@ -25,18 +25,10 @@ function dateKeyLocal(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-function isWithinPastDay(iso: string): boolean {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return false;
-  const now = Date.now();
-  return t <= now && t >= now - 24 * 60 * 60 * 1000;
-}
-
 export type SsfAirQualityScreenProps = {
   sensors: SensorPoint[];
   kriging: CurrentKrigingRow[];
   loading: boolean;
-  initialLoadProgress: number;
   error: FetchError | null;
   timelineTimesAsc: string[];
   timelineIndex: number;
@@ -52,7 +44,6 @@ export function SsfAirQualityScreen({
   sensors,
   kriging,
   loading,
-  initialLoadProgress,
   error,
   timelineTimesAsc,
   timelineIndex,
@@ -65,7 +56,13 @@ export function SsfAirQualityScreen({
 }: SsfAirQualityScreenProps) {
   const insets = useSafeAreaInsets();
 
-  const [selected, setSelected] = useState<{ lat: number; lon: number } | null>(null);
+  const [selected, setSelected] = useState<{
+    lat: number;
+    lon: number;
+    label: string | null;
+    sensorIndex?: number;
+    sensorSource?: string;
+  } | null>(null);
   const [panelSlot, setPanelSlot] = useState<PanelSlot>('bottom');
 
   const mapRegion = useMemo(() => regionFromSensorData(sensors, kriging), [sensors, kriging]);
@@ -73,27 +70,20 @@ export function SsfAirQualityScreen({
     () => timelineTimesAsc[timelineIndex] ?? (timelineTimesAsc.length === 0 ? new Date().toISOString() : null),
     [timelineIndex, timelineTimesAsc],
   );
-  const todayKey = useMemo(() => dateKeyLocal(new Date()), []);
   const isSelectedDateToday = useMemo(() => {
     if (!selectedTimeIsoForUi) return true;
-    const selected = new Date(selectedTimeIsoForUi);
-    if (!Number.isFinite(selected.getTime())) return true;
-    return dateKeyLocal(selected) === todayKey || isWithinPastDay(selectedTimeIsoForUi);
-  }, [selectedTimeIsoForUi, todayKey]);
+    const selectedDate = new Date(selectedTimeIsoForUi);
+    if (!Number.isFinite(selectedDate.getTime())) return true;
+    return dateKeyLocal(selectedDate) === dateKeyLocal(new Date());
+  }, [selectedTimeIsoForUi]);
   const todayTimelineTimesAsc = useMemo(() => {
+    const todayKey = dateKeyLocal(new Date());
     return timelineTimesAsc.filter((iso) => {
       const d = new Date(iso);
       if (!Number.isFinite(d.getTime())) return false;
       return dateKeyLocal(d) === todayKey;
     });
-  }, [timelineTimesAsc, todayKey]);
-  const latestTodayRecordedTime = useMemo(
-    () =>
-      todayTimelineTimesAsc[todayTimelineTimesAsc.length - 1] ??
-      timelineTimesAsc[timelineTimesAsc.length - 1] ??
-      null,
-    [todayTimelineTimesAsc, timelineTimesAsc],
-  );
+  }, [timelineTimesAsc]);
   const timelineTimesForUi = useMemo(() => {
     if (!selectedTimeIsoForUi) return todayTimelineTimesAsc;
     if (!isSelectedDateToday) return [selectedTimeIsoForUi];
@@ -137,11 +127,35 @@ export function SsfAirQualityScreen({
   }, [sensors]);
 
   const onSelectCoordinate = useCallback(
-    (lat: number, lon: number, detail: { touchInBottomBand: boolean }) => {
-      setSelected({ lat, lon });
+    (
+      lat: number,
+      lon: number,
+      detail: {
+        touchInBottomBand: boolean;
+        sensorIndex?: number;
+        sensorSource?: string;
+        sensorName?: string | null;
+      },
+    ) => {
+      const matchedSensor =
+        detail.sensorIndex != null
+          ? sensors.find(
+              (s) =>
+                s.sensorIndex === detail.sensorIndex &&
+                (detail.sensorSource == null || s.source === detail.sensorSource),
+            ) ?? sensors.find((s) => s.sensorIndex === detail.sensorIndex)
+          : undefined;
+      const sensorName = detail.sensorName ?? matchedSensor?.name ?? null;
+      setSelected({
+        lat,
+        lon,
+        label: sensorName,
+        sensorIndex: matchedSensor?.sensorIndex,
+        sensorSource: matchedSensor?.source,
+      });
       setPanelSlot(detail.touchInBottomBand ? 'center' : 'bottom');
     },
-    [],
+    [sensors],
   );
 
   const clearSelection = useCallback(() => {
@@ -156,16 +170,6 @@ export function SsfAirQualityScreen({
           <Pm25VerticalScale maxPm25={maxSensorPm25} />
 
           <View style={styles.mapCol}>
-            {loading && sensors.length === 0 && kriging.length === 0 ? (
-              <View style={styles.loadingOverlay} pointerEvents="none">
-                <Image source={require('../assets/rise-south-city-logo.png')} style={styles.loadingLogo} />
-                <Text style={styles.loadingText}>Loading PurpleAir and Clarity data...</Text>
-                <View style={styles.progressTrack}>
-                  <View style={[styles.progressFill, { width: `${Math.max(8, Math.min(100, initialLoadProgress * 100))}%` }]} />
-                </View>
-                <Text style={styles.progressText}>{Math.round(initialLoadProgress * 100)}%</Text>
-              </View>
-            ) : null}
             <SsfMap
               sensors={sensors}
               kriging={kriging}
@@ -201,6 +205,15 @@ export function SsfAirQualityScreen({
               >
                 <AqiPanel
                   selected={selected}
+                  selectedLabel={selected.label}
+                  selectedSensor={
+                    selected.sensorIndex != null
+                      ? {
+                          sensorIndex: selected.sensorIndex,
+                          source: selected.sensorSource,
+                        }
+                      : null
+                  }
                   loading={loading}
                   error={error}
                   sensors={sensors}
@@ -260,7 +273,6 @@ export function SsfAirQualityScreen({
             loading={timelineLoading}
             onPickRecordedTime={onSelectRecordedTime}
             liveAverageAqi={liveAverageAqi}
-            todayRecordedTime={latestTodayRecordedTime}
             timelineScrollable={isSelectedDateToday}
           />
         </View>
@@ -288,33 +300,6 @@ const styles = StyleSheet.create({
     textShadowRadius: 6,
     textShadowOffset: { width: 0, height: 0 },
   },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    backgroundColor: 'rgba(241,245,249,0.72)',
-  },
-  loadingLogo: {
-    width: 144,
-    height: 144,
-    resizeMode: 'contain',
-  },
-  loadingText: { fontSize: 13, color: '#334155', fontWeight: '600' },
-  progressTrack: {
-    width: 220,
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: '#cbd5e1',
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 999,
-    backgroundColor: '#1e3a8a',
-  },
-  progressText: { fontSize: 12, color: '#475569' },
   sheetWrapBottom: {
     position: 'absolute',
     left: 0,

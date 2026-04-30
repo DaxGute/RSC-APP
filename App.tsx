@@ -5,6 +5,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
+import { InitialLoadSplash } from './components/InitialLoadSplash';
 import { SsfAirQualityScreen } from './components/SsfAirQualityScreen';
 import { useSsfAirQuality } from './hooks/useSsfAirQuality';
 import { ensureAnonymousSession } from './lib/ensureAnonymousSession';
@@ -25,6 +26,7 @@ function AppContent() {
     insufficientData,
     liveAverageAqi,
   } = useSsfAirQuality();
+  const showInitialSplash = loading && sensors.length === 0 && kriging.length === 0;
 
   return (
     <View style={styles.appRoot}>
@@ -32,7 +34,6 @@ function AppContent() {
         sensors={sensors}
         kriging={kriging}
         loading={loading}
-        initialLoadProgress={initialLoadProgress}
         error={error}
         timelineTimesAsc={timelineTimesAsc}
         timelineIndex={timelineIndex}
@@ -43,6 +44,7 @@ function AppContent() {
         insufficientData={insufficientData}
         liveAverageAqi={liveAverageAqi}
       />
+      <InitialLoadSplash visible={showInitialSplash} progress={initialLoadProgress} />
     </View>
   );
 }

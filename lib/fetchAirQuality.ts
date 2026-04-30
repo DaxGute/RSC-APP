@@ -12,8 +12,9 @@ const SNAPSHOT_ROW_CAP = 50_000;
  */
 const KRIGING_PAGE_SIZE = 5000;
 const KRIGING_MAX_PAGES = 200;
-const SENSOR_COLUMNS = 'sensor_index,latitude,longitude,pm25,time';
-const KRIGING_COLUMNS = 'latitude,longitude,pm25,time';
+const SENSOR_COLUMNS = 'sensor_index,name,latitude,longitude,pm25,time';
+// Map DB `variance` -> app field `kriging_variance`.
+const KRIGING_COLUMNS = 'latitude,longitude,pm25,aqi,kriging_variance:variance,time';
 const DAILY_SENSOR_AQI_COLUMNS =
   'source,sensor_index,name,latitude,longitude,pm25,aqi,time,reading_count';
 
@@ -339,7 +340,7 @@ export async function fetchCurrentSensorReadings(): Promise<{
   };
 }
 
-/** Latest interpolated grid snapshot (full table; typically replaced each pipeline run). */
+/** All interpolated grid rows from current_kriging (single surface per load). */
 export async function fetchCurrentKrigingGrid(): Promise<{
   data: CurrentKrigingRow[] | null;
   error: FetchError | null;
@@ -363,8 +364,7 @@ export async function fetchCurrentKrigingGrid(): Promise<{
       latitude: row.latitude as number,
       longitude: row.longitude as number,
       pm25: row.pm25 ?? null,
-      time: row.time ?? new Date(0).toISOString(),
-      // Optional in some deployments; keep null when absent.
+      time: row.time ?? new Date().toISOString(),
       kriging_variance: row.kriging_variance ?? null,
       aqi: row.aqi ?? null,
     }));
