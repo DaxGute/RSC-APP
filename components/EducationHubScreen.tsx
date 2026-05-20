@@ -1,11 +1,31 @@
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+} from 'react-native';
 import { ResizeMode, Video } from 'expo-av';
 import type { AVPlaybackSource } from 'expo-av';
+import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
+
+const EXPAND_DURATION_MS = 280;
+const COLLAPSED_BAR_HEIGHT = 48;
 
 type AqiLevel = {
   label: string;
   range: string;
   leftColor: string;
+  barFg: string;
   advice: string[];
   actions: string[];
 };
@@ -23,6 +43,7 @@ const levels: AqiLevel[] = [
     label: 'Good',
     range: 'AQI 0-50',
     leftColor: '#00e400',
+    barFg: '#0f172a',
     advice: [
       'Air quality is satisfactory and health risk is minimal.',
       'No special precautions are needed for most people.',
@@ -34,6 +55,7 @@ const levels: AqiLevel[] = [
     label: 'Moderate',
     range: 'AQI 51-100',
     leftColor: '#ffdb00',
+    barFg: '#0f172a',
     advice: [
       'Air quality is acceptable for most people.',
       'Very sensitive people may notice minor irritation with prolonged exposure.',
@@ -45,6 +67,7 @@ const levels: AqiLevel[] = [
     label: 'Unhealthy for Sensitive Groups',
     range: 'AQI 101-150',
     leftColor: '#ff7e00',
+    barFg: '#0f172a',
     advice: [
       'Sensitive groups are at greater risk from prolonged exposure.',
       'People with asthma/COPD or heart disease may respond to symptoms sooner.',
@@ -56,6 +79,7 @@ const levels: AqiLevel[] = [
     label: 'Unhealthy',
     range: 'AQI 151-200',
     leftColor: '#ff0000',
+    barFg: '#ffffff',
     advice: [
       'Everyone can begin to experience health effects.',
       'Sensitive groups may feel effects earlier and more intensely.',
@@ -67,6 +91,7 @@ const levels: AqiLevel[] = [
     label: 'Very Unhealthy',
     range: 'AQI 201-300',
     leftColor: '#8f3f97',
+    barFg: '#ffffff',
     advice: [
       'Health alert: risk is high for the entire population.',
       'Avoid prolonged or heavy outdoor activity.',
@@ -78,6 +103,7 @@ const levels: AqiLevel[] = [
     label: 'Hazardous',
     range: 'AQI 301+',
     leftColor: '#7e0023',
+    barFg: '#ffffff',
     advice: [
       'Emergency conditions. Serious health impacts are likely.',
       'Avoid all outdoor exertion and remain indoors when possible.',
@@ -118,41 +144,168 @@ function toPlaybackSource(source: AVPlaybackSource): AVPlaybackSource {
   return source;
 }
 
-export function EducationHubScreen() {
+type AqiLevelBodyProps = {
+  level: AqiLevel;
+  showSensitiveGroups: boolean;
+};
+
+function AqiLevelBody({ level, showSensitiveGroups }: AqiLevelBodyProps) {
   return (
-    <ScrollView contentContainerStyle={styles.content} style={styles.container}>
-      <View style={styles.groupCard}>
-        <Text style={styles.groupTitle}>Who counts as a sensitive group?</Text>
-        {sensitiveGroups.map((group) => (
-          <Text key={group} style={styles.groupItem}>
-            {'\u2022'} {group}
+    <View style={styles.levelBody}>
+      <View style={[styles.levelLeft, { backgroundColor: level.leftColor }]}>
+        <Text style={[styles.levelLabel, { color: level.barFg }]}>{level.label}</Text>
+        <Text style={[styles.levelRange, { color: level.barFg }]}>{level.range}</Text>
+      </View>
+      <View style={styles.levelRight}>
+        {level.advice.map((line) => (
+          <Text key={`${level.label}-${line}`} style={styles.adviceLine}>
+            {'\u2022'} {line}
           </Text>
         ))}
-      </View>
-
-      {levels.map((level) => (
-        <View key={level.label} style={styles.levelCard}>
-          <View style={[styles.levelLeft, { backgroundColor: level.leftColor }]}>
-            <Text style={styles.levelLabel}>{level.label}</Text>
-            <Text style={styles.levelRange}>{level.range}</Text>
-          </View>
-          <View style={styles.levelRight}>
-            {level.advice.map((line) => (
-              <Text key={`${level.label}-${line}`} style={styles.adviceLine}>
-                {'\u2022'} {line}
+        {showSensitiveGroups ? (
+          <View style={styles.sensitiveSection}>
+            <Text style={styles.sensitiveTitle}>Who counts as a sensitive group?</Text>
+            {sensitiveGroups.map((group) => (
+              <Text key={group} style={styles.sensitiveItem}>
+                {'\u2022'} {group}
               </Text>
             ))}
-            <View style={styles.actionWrap}>
-              {level.actions.map((action) => (
-                <View key={`${level.label}-${action}`} style={styles.actionChip}>
-                  <Text style={styles.actionChipText}>{action}</Text>
-                </View>
-              ))}
-            </View>
           </View>
+        ) : null}
+        <View style={styles.actionWrap}>
+          {level.actions.map((action) => (
+            <View key={`${level.label}-${action}`} style={styles.actionChip}>
+              <Text style={styles.actionChipText}>{action}</Text>
+            </View>
+          ))}
         </View>
-      ))}
+      </View>
+    </View>
+  );
+}
 
+type AqiCategoryRowProps = {
+  level: AqiLevel;
+  expanded: boolean;
+  isLast: boolean;
+  showSensitiveGroups: boolean;
+  onToggle: () => void;
+};
+
+function AqiCategoryRow({
+  level,
+  expanded,
+  isLast,
+  showSensitiveGroups,
+  onToggle,
+}: AqiCategoryRowProps) {
+  const progress = useSharedValue(expanded ? 1 : 0);
+  const [bodyHeight, setBodyHeight] = useState(0);
+
+  useEffect(() => {
+    progress.value = withTiming(expanded ? 1 : 0, { duration: EXPAND_DURATION_MS });
+  }, [expanded, progress]);
+
+  const onBodyLayout = useCallback((event: LayoutChangeEvent) => {
+    const nextHeight = Math.ceil(event.nativeEvent.layout.height);
+    if (nextHeight > 0) {
+      setBodyHeight((prev) => (prev === nextHeight ? prev : nextHeight));
+    }
+  }, []);
+
+  const containerStyle = useAnimatedStyle(() => {
+    const targetHeight =
+      bodyHeight > 0
+        ? interpolate(progress.value, [0, 1], [COLLAPSED_BAR_HEIGHT, bodyHeight], Extrapolation.CLAMP)
+        : COLLAPSED_BAR_HEIGHT;
+    return { height: targetHeight, overflow: 'hidden' as const };
+  });
+
+  const barStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0, 0.45], [1, 0], Extrapolation.CLAMP),
+    transform: [
+      {
+        translateY: interpolate(progress.value, [0, 1], [0, -6], Extrapolation.CLAMP),
+      },
+    ],
+  }));
+
+  const bodyRevealStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0.2, 1], [0, 1], Extrapolation.CLAMP),
+    transform: [
+      {
+        translateY: interpolate(progress.value, [0, 1], [8, 0], Extrapolation.CLAMP),
+      },
+    ],
+  }));
+
+  const chevronStyle = useAnimatedStyle(() => ({
+    transform: [
+      {
+        rotate: `${interpolate(progress.value, [0, 1], [0, 180], Extrapolation.CLAMP)}deg`,
+      },
+    ],
+  }));
+
+  return (
+    <View style={[styles.tableRow, !isLast && styles.tableRowDivider]}>
+      <Animated.View style={containerStyle}>
+        <Animated.View
+          style={[styles.collapsedBar, { backgroundColor: level.leftColor }, barStyle]}
+          pointerEvents={expanded ? 'none' : 'auto'}
+        >
+          <Pressable
+            onPress={onToggle}
+            style={styles.collapsedPressable}
+            accessibilityRole="button"
+            accessibilityState={{ expanded }}
+            accessibilityLabel={`${level.label}, ${level.range}`}
+          >
+            <Text style={[styles.collapsedTitle, { color: level.barFg }]} numberOfLines={2}>
+              {level.label}
+            </Text>
+            <Animated.View style={chevronStyle}>
+              <Ionicons name="chevron-down" size={18} color={level.barFg} />
+            </Animated.View>
+          </Pressable>
+        </Animated.View>
+
+        <Animated.View style={[styles.expandedLayer, bodyRevealStyle]} pointerEvents={expanded ? 'auto' : 'none'}>
+          <Pressable
+            onPress={onToggle}
+            style={styles.expandedPressable}
+            accessibilityRole="button"
+            accessibilityState={{ expanded }}
+            accessibilityLabel={`${level.label}, ${level.range}`}
+          >
+            <AqiLevelBody level={level} showSensitiveGroups={showSensitiveGroups} />
+            <View style={styles.expandedChevron}>
+              <Animated.View style={chevronStyle}>
+                <Ionicons name="chevron-down" size={18} color="#475569" />
+              </Animated.View>
+            </View>
+          </Pressable>
+        </Animated.View>
+      </Animated.View>
+
+      <View style={styles.measureHost} pointerEvents="none">
+        <View onLayout={onBodyLayout}>
+          <AqiLevelBody level={level} showSensitiveGroups={showSensitiveGroups} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+export function EducationHubScreen() {
+  const [expandedLabel, setExpandedLabel] = useState<string | null>(null);
+
+  const onToggleRow = useCallback((label: string) => {
+    setExpandedLabel((current) => (current === label ? null : label));
+  }, []);
+
+  return (
+    <ScrollView contentContainerStyle={styles.content} style={styles.container}>
       <View style={styles.pmCard}>
         <Text style={styles.pmTitle}>About PM2.5</Text>
         <Text style={styles.pmBody}>
@@ -165,11 +318,24 @@ export function EducationHubScreen() {
         </Text>
       </View>
 
+      <View style={styles.aqiTable}>
+        {levels.map((level, index) => (
+          <AqiCategoryRow
+            key={level.label}
+            level={level}
+            expanded={expandedLabel === level.label}
+            isLast={index === levels.length - 1}
+            showSensitiveGroups={level.label === 'Unhealthy for Sensitive Groups'}
+            onToggle={() => onToggleRow(level.label)}
+          />
+        ))}
+      </View>
+
       <View style={styles.videoSection}>
         <Text style={styles.videoSectionTitle}>Video Learning</Text>
         <Text style={styles.videoSectionSubtitle}>Watch these quick explainers on AQI, PM2.5, and air-safety habits.</Text>
         {educationVideos.map((video) => (
-          <View key={video.source} style={styles.videoCard}>
+          <View key={video.title} style={styles.videoCard}>
             <Text style={styles.videoTitle}>{video.title}</Text>
             <View style={styles.videoFrame}>
               <Video
@@ -196,32 +362,71 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 10,
   },
-  groupCard: {
-    backgroundColor: '#f8f2df',
-    borderWidth: 1,
-    borderColor: '#e2d6b2',
-    borderRadius: 10,
-    padding: 12,
-  },
-  groupTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#1f2937',
-    marginBottom: 8,
-  },
-  groupItem: {
-    fontSize: 13,
-    color: '#374151',
-    lineHeight: 19,
-    marginBottom: 2,
-  },
-  levelCard: {
+  aqiTable: {
     backgroundColor: '#ffffff',
     borderWidth: 1,
     borderColor: '#d1d5db',
     borderRadius: 10,
-    flexDirection: 'row',
     overflow: 'hidden',
+  },
+  tableRow: {
+    position: 'relative',
+  },
+  tableRowDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#d1d5db',
+  },
+  collapsedBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: COLLAPSED_BAR_HEIGHT,
+    zIndex: 2,
+  },
+  collapsedPressable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    minHeight: COLLAPSED_BAR_HEIGHT,
+  },
+  collapsedTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '800',
+    paddingRight: 8,
+  },
+  expandedLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
+  },
+  expandedPressable: {
+    position: 'relative',
+  },
+  expandedChevron: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    zIndex: 3,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderRadius: 999,
+    padding: 4,
+  },
+  measureHost: {
+    position: 'absolute',
+    opacity: 0,
+    left: 0,
+    right: 0,
+    zIndex: -1,
+  },
+  levelBody: {
+    flexDirection: 'row',
+    backgroundColor: '#ffffff',
   },
   levelLeft: {
     width: 92,
@@ -229,29 +434,53 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 8,
+    paddingVertical: 12,
   },
   levelLabel: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#0f172a',
     textAlign: 'center',
   },
   levelRange: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#0f172a',
     marginTop: 4,
     textAlign: 'center',
   },
   levelRight: {
     flex: 1,
-    padding: 10,
+    paddingTop: 10,
+    paddingBottom: 10,
+    paddingLeft: 10,
+    paddingRight: 36,
     gap: 4,
   },
   adviceLine: {
     fontSize: 12.5,
     color: '#334155',
     lineHeight: 18,
+  },
+  sensitiveSection: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#e2d6b2',
+    backgroundColor: '#f8f2df',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingBottom: 6,
+  },
+  sensitiveTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#1f2937',
+    marginBottom: 4,
+  },
+  sensitiveItem: {
+    fontSize: 12.5,
+    color: '#374151',
+    lineHeight: 18,
+    marginBottom: 2,
   },
   actionWrap: {
     marginTop: 6,
@@ -278,7 +507,6 @@ const styles = StyleSheet.create({
     borderColor: '#d1d5db',
     borderRadius: 10,
     padding: 12,
-    marginBottom: 14,
   },
   pmTitle: {
     fontSize: 18,
