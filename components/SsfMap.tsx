@@ -43,6 +43,8 @@ export type SsfMapProps = {
   selectedCalloutShiftX?: number;
   onNotificationPress?: () => void;
   onModelingPress?: () => void;
+  /** Hides map chrome (Alert/Model/zoom) while picking an alert location on the map. */
+  isSelectingAlertLocation?: boolean;
 };
 
 export type SsfMapHandle = {
@@ -93,6 +95,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
     selectedCalloutShiftX = 0,
     onNotificationPress,
     onModelingPress,
+    isSelectingAlertLocation = false,
   },
   ref,
 ) {
@@ -259,13 +262,12 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
       const next = Math.min(MAX_ZOOM_LEVEL, Math.max(MIN_ZOOM_LEVEL, zoomLevel + delta));
       setZoomLevel(next);
       cameraRef.current?.setCamera({
-        centerCoordinate: [mapRegion.longitude, mapRegion.latitude],
         zoomLevel: next,
         animationDuration: 200,
         animationMode: 'easeTo',
       });
     },
-    [mapRegion.latitude, mapRegion.longitude, zoomLevel],
+    [zoomLevel],
   );
 
   const zoomIn = useCallback(() => applyZoomDelta(ZOOM_STEP), [applyZoomDelta]);
@@ -373,7 +375,6 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
             centerCoordinate: [mapRegion.longitude, mapRegion.latitude],
             zoomLevel: DEFAULT_ZOOM_LEVEL,
           }}
-          centerCoordinate={[mapRegion.longitude, mapRegion.latitude]}
           maxBounds={{
             ne: [SSF_BBOX.seLon, SSF_BBOX.nwLat],
             sw: [SSF_BBOX.nwLon, SSF_BBOX.seLat],
@@ -447,14 +448,16 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
           </Mapbox.PointAnnotation>
         ) : null}
       </Mapbox.MapView>
-      <MapScaleActions
-        onNotificationPress={onNotificationPress}
-        onModelingPress={onModelingPress}
-        onZoomIn={zoomIn}
-        onZoomOut={zoomOut}
-        canZoomIn={canZoomIn}
-        canZoomOut={canZoomOut}
-      />
+      {!isSelectingAlertLocation ? (
+        <MapScaleActions
+          onNotificationPress={onNotificationPress}
+          onModelingPress={onModelingPress}
+          onZoomIn={zoomIn}
+          onZoomOut={zoomOut}
+          canZoomIn={canZoomIn}
+          canZoomOut={canZoomOut}
+        />
+      ) : null}
     </View>
   );
 });

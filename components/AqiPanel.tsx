@@ -759,7 +759,6 @@ export function AqiPanel({
                   <MiniCard
                     k="Sensor distance"
                     v="—"
-                    sub="Great-circle distance"
                     valueFontSize={cardValueSize}
                   />
                 </>
@@ -774,7 +773,6 @@ export function AqiPanel({
                           : `${panel.closest.pm25.toFixed(1)} µg/m³`
                         : '—'
                     }
-                    sub="Nearest observed sensor"
                     valueFontSize={cardValueSize}
                   />
                   <MiniCard
@@ -782,7 +780,6 @@ export function AqiPanel({
                     v={
                       panel.closest ? `${milesBetweenKm(panel.closest.distKm).toFixed(2)} mi` : '—'
                     }
-                    sub="Great-circle distance"
                     valueFontSize={cardValueSize}
                   />
                 </>
@@ -1099,7 +1096,7 @@ function CompactPanelBody({
                     : `${panel.closest.pm25.toFixed(1)} µg/m³`
                   : '—'
             }
-            sub={ph ? 'Click the map to see the nearest sensor' : 'Nearest observed sensor'}
+            sub={ph ? 'Click the map to see the nearest sensor' : undefined}
             valueFontSize={cardValueSize}
             compact
           />
@@ -1108,7 +1105,6 @@ function CompactPanelBody({
             v={
               ph || !panel.closest ? '—' : `${milesBetweenKm(panel.closest.distKm).toFixed(2)} mi`
             }
-            sub="Great-circle distance"
             valueFontSize={cardValueSize}
             compact
           />
@@ -1127,7 +1123,7 @@ function MiniCard({
 }: {
   k: string;
   v: string;
-  sub: string;
+  sub?: string;
   valueFontSize: number;
   compact?: boolean;
 }) {
@@ -1140,9 +1136,11 @@ function MiniCard({
       >
         {v}
       </Text>
-      <Text style={[styles.miniSub, compactCard && styles.miniSubCompact]} numberOfLines={compactCard ? 2 : undefined}>
-        {sub}
-      </Text>
+      {sub ? (
+        <Text style={[styles.miniSub, compactCard && styles.miniSubCompact]} numberOfLines={compactCard ? 2 : undefined}>
+          {sub}
+        </Text>
+      ) : null}
     </View>
   );
 }

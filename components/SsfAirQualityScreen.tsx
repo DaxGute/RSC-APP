@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -26,6 +27,7 @@ import { pm25ToAqi } from '../lib/aqiUtils';
 import { useAirQualityReminder } from '../hooks/useAirQualityReminder';
 import { regionFromSensorData } from '../lib/mapRegionFromData';
 import type { SensorPoint } from '../lib/sensorTypes';
+import { AlertLocationSelectionBanner } from './AlertLocationSelectionBanner';
 import { AqiPanel } from './AqiPanel';
 import { SsfMap, type SsfMapHandle } from './SsfMap';
 import { TimeRangeModule } from './TimeRangeModule';
@@ -318,7 +320,8 @@ export function SsfAirQualityScreen({
   averageAqiTimeseries,
 }: SsfAirQualityScreenProps) {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const alertSelectionTopDimHeight = windowHeight * 0.05;
 
   const [selected, setSelected] = useState<{
     lat: number;
@@ -349,7 +352,9 @@ export function SsfAirQualityScreen({
   const dayLoadGenRef = useRef(0);
   const mapRef = useRef<SsfMapHandle>(null);
   const [openReminderModalSignal, setOpenReminderModalSignal] = useState(0);
+  const [isSelectingAlertLocation, setIsSelectingAlertLocation] = useState(false);
   const pendingOpenReminderRef = useRef(false);
+  const isSelectingAlertLocationRef = useRef(false);
 
   const mainDropdownOpacity = useRef(new Animated.Value(0)).current;
   const mainDropdownTranslateY = useRef(new Animated.Value(0)).current;
@@ -422,7 +427,11 @@ export function SsfAirQualityScreen({
     viewingLive,
   );
 
-  const onSelectCoordinate = useCallback(
+  useEffect(() => {
+    isSelectingAlertLocationRef.current = isSelectingAlertLocation;
+  }, [isSelectingAlertLocation]);
+
+  const applyMapSelection = useCallback(
     (
       lat: number,
       lon: number,
@@ -460,6 +469,31 @@ export function SsfAirQualityScreen({
     [sensors],
   );
 
+  const onSelectCoordinate = useCallback(
+    (
+      lat: number,
+      lon: number,
+      detail: {
+        touchInBottomBand: boolean;
+        screenPointX?: number | null;
+        screenPointY?: number | null;
+        sensorIndex?: number;
+        sensorSource?: string;
+        sensorName?: string | null;
+      },
+    ) => {
+      if (isSelectingAlertLocationRef.current) {
+        applyMapSelection(lat, lon, detail);
+        setIsSelectingAlertLocation(false);
+        mapRef.current?.focusCoordinate(lat, lon);
+        pendingOpenReminderRef.current = true;
+        return;
+      }
+      applyMapSelection(lat, lon, detail);
+    },
+    [applyMapSelection],
+  );
+
   const clearSelection = useCallback(() => {
     setSelected(null);
   }, []);
@@ -487,23 +521,33 @@ export function SsfAirQualityScreen({
     [onSelectCoordinate],
   );
 
+  const cancelAlertLocationSelection = useCallback(() => {
+    setIsSelectingAlertLocation(false);
+  }, []);
+
   const focusNotificationLocation = useCallback(() => {
-    if (reminder == null) {
-      selectNotificationCoordinate(mapRegion.latitude, mapRegion.longitude);
+    if (reminder != null) {
+      mapRef.current?.focusCoordinate(reminder.lat, reminder.lon);
+      selectNotificationCoordinate(reminder.lat, reminder.lon);
       requestOpenNotificationSettings();
       return;
     }
 
-    mapRef.current?.focusCoordinate(reminder.lat, reminder.lon);
-    selectNotificationCoordinate(reminder.lat, reminder.lon);
-    requestOpenNotificationSettings();
-  }, [
-    mapRegion.latitude,
-    mapRegion.longitude,
-    reminder,
-    requestOpenNotificationSettings,
-    selectNotificationCoordinate,
-  ]);
+    if (selected != null) {
+      if (timeFilterMenuOpenRef.current) {
+        closeTimeFilterMenuRef.current();
+      }
+      mapRef.current?.focusCoordinate(selected.lat, selected.lon);
+      selectNotificationCoordinate(selected.lat, selected.lon);
+      requestOpenNotificationSettings();
+      return;
+    }
+
+    if (timeFilterMenuOpenRef.current) {
+      closeTimeFilterMenuRef.current();
+    }
+    setIsSelectingAlertLocation(true);
+  }, [reminder, requestOpenNotificationSettings, selectNotificationCoordinate, selected]);
 
   useEffect(() => {
     if (!pendingOpenReminderRef.current || selected == null) return;
@@ -1001,6 +1045,7 @@ export function SsfAirQualityScreen({
               sensors={mapSensors}
               kriging={mapKriging}
               mapRegion={mapRegion}
+              isSelectingAlertLocation={isSelectingAlertLocation}
               selected={selected ? { latitude: selected.lat, longitude: selected.lon } : null}
               selectedCalloutPlacement={selectedCalloutPlacement}
               selectedCalloutShiftX={selectedCalloutShiftX}
@@ -1091,6 +1136,7 @@ export function SsfAirQualityScreen({
                 right: Math.max(insets.right + 8, 8),
               },
             ]}
+            pointerEvents={isSelectingAlertLocation ? 'none' : 'auto'}
           >
             {timelineLoading || monthRowsLoading || dayPastRowsLoading ? (
               <ActivityIndicator size="small" color="#475569" style={styles.calendarSpinner} />
@@ -1354,7 +1400,7 @@ export function SsfAirQualityScreen({
                 bottom: BOTTOM_TAB_BAR_RESERVE,
               },
             ]}
-            pointerEvents="auto"
+            pointerEvents={isSelectingAlertLocation ? 'none' : 'auto'}
           >
             <TimeRangeModule
               key={`${timeFilterMode}:${selectedMonthLabel}:${selectedDayLabel}`}
@@ -1384,6 +1430,18 @@ export function SsfAirQualityScreen({
             />
           </View>
         </View>
+        {isSelectingAlertLocation ? (
+          <LinearGradient
+            pointerEvents="none"
+            colors={['rgba(15, 23, 42, 0.32)', 'rgba(15, 23, 42, 0.15)', 'rgba(15, 23, 42, 0)']}
+            locations={[0, 0.72, 1]}
+            style={[styles.alertSelectionTopDim, { height: alertSelectionTopDimHeight }]}
+          />
+        ) : null}
+        <AlertLocationSelectionBanner
+          visible={isSelectingAlertLocation}
+          onCancel={cancelAlertLocationSelection}
+        />
       </View>
       <TimelineCalendarModal
         visible={calendarOpen}
@@ -1405,6 +1463,13 @@ const styles = StyleSheet.create({
   screenContent: { flex: 1, position: 'relative' },
   main: { flex: 1, minHeight: 0 },
   mapCol: { flex: 1, minHeight: 0, zIndex: 0 },
+  alertSelectionTopDim: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 55,
+  },
   calendarBtnWrap: {
     position: 'absolute',
     right: 10,
