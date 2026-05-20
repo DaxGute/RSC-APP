@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -35,11 +35,6 @@ function AppContent() {
     averageAqiTimeseries,
   } = useSsfAirQuality();
   const showInitialSplash = loading && sensors.length === 0 && kriging.length === 0;
-  const selectedTimeIso = useMemo(
-    () => timelineTimesAsc[timelineIndex] ?? (timelineTimesAsc.length === 0 ? new Date().toISOString() : null),
-    [timelineIndex, timelineTimesAsc],
-  );
-
   return (
     <View style={styles.appRoot}>
       <View style={styles.screenContainer}>
@@ -64,14 +59,8 @@ function AppContent() {
             points={averageAqiTimeseries}
             timelineTimesAsc={timelineTimesAsc}
             timelineIndex={timelineIndex}
-            selectedTimeIso={selectedTimeIso}
             liveAverageAqi={liveAverageAqi}
             loading={timelineLoading}
-            onSelectTime={(recordedTime) => {
-              const sourceIndex = timelineTimesAsc.findIndex((iso) => iso === recordedTime);
-              if (sourceIndex >= 0) setTimelineIndex(sourceIndex);
-            }}
-            onSelectRecordedTime={selectRecordedTime}
           />
         ) : (
           <EducationHubScreen />

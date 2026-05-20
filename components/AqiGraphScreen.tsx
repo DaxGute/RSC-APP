@@ -1,361 +1,429 @@
-import { Ionicons } from '@expo/vector-icons';
-import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, LayoutChangeEvent, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Svg, { Line } from 'react-native-svg';
 
-import { aqiCategory } from '../lib/aqiUtils';
-import { TimeRangeModule } from './TimeRangeModule';
-import { TimelineCalendarModal } from './TimelineCalendarModal';
+import { dailyAqiMapFromDaySummaries, type DaySummary } from '../lib/aqiCalendarData';
+import {
+  buildAverageAqiTimeseries,
+  computeRollingWeekHourlyAverages,
+  countDaysByCategory,
+  DAY_AQI_CATEGORY_META,
+  enumerateDaysInMonth,
+  type DayAqiCategory,
+} from '../lib/aqiTenMinuteAggregation';
+import { aqiCategory, pm25ToAqi } from '../lib/aqiUtils';
+import { fetchDailySensorAqiCalendarRows, fetchSensorReadingsBetweenRecordedTimes } from '../lib/fetchAirQuality';
+import {
+  buildDailyPm25Map,
+  buildYearlyPm25ByMonthChart,
+  filterDailyPm25RowsForYear,
+} from '../lib/yearlyPm25ByMonth';
+import { AqiColoredCalendar } from './AqiColoredCalendar';
+
+const GRAPH_HISTORY_WEEKS = 12;
 
 type AqiGraphScreenProps = {
   points: Array<{ time: string; avgAqi: number }>;
   timelineTimesAsc: string[];
   timelineIndex: number;
-  selectedTimeIso: string | null;
   liveAverageAqi: number | null;
   loading: boolean;
-  onSelectTime: (timeIso: string) => void;
-  onSelectRecordedTime: (timeIso: string) => void;
 };
 
-function dateKeyLocal(date: Date): string {
-  const y = date.getFullYear();
-  const m = `${date.getMonth() + 1}`.padStart(2, '0');
-  const d = `${date.getDate()}`.padStart(2, '0');
-  return `${y}-${m}-${d}`;
+const ROLLING_HOUR_CHART_HEIGHT = 100;
+const ROLLING_HOUR_CHART_MAX_AQI = 150;
+const ROLLING_HOUR_LABEL_HOURS = [0, 6, 12, 18];
+const YEARLY_PM25_CHART_HEIGHT = 100;
+const YEARLY_PM25_CHART_MIN_MAX = 35;
+
+function formatRollingHourLabel(hour: number): string {
+  if (hour === 0) return '12a';
+  if (hour === 12) return '12p';
+  if (hour < 12) return `${hour}a`;
+  return `${hour - 12}p`;
 }
 
-function formatDateButtonLabel(iso: string | null): string {
-  if (!iso) return 'today';
-  const date = new Date(iso);
-  if (!Number.isFinite(date.getTime())) return 'today';
-  if (dateKeyLocal(date) === dateKeyLocal(new Date())) return 'today';
-  const mm = `${date.getMonth() + 1}`.padStart(2, '0');
-  const dd = `${date.getDate()}`.padStart(2, '0');
-  const yy = `${date.getFullYear()}`.slice(-2);
-  return `${mm}/${dd}/${yy}`;
+function rollingHourBarHeight(avgAqi: number): number {
+  return Math.max(4, (avgAqi / ROLLING_HOUR_CHART_MAX_AQI) * ROLLING_HOUR_CHART_HEIGHT);
+}
+
+function yearlyPm25BarHeight(avgPm25: number, chartMaxPm25: number): number {
+  const scale = Math.max(YEARLY_PM25_CHART_MIN_MAX, chartMaxPm25);
+  return Math.max(4, (avgPm25 / scale) * YEARLY_PM25_CHART_HEIGHT);
 }
 
 export function AqiGraphScreen({
   points,
   timelineTimesAsc,
   timelineIndex,
-  selectedTimeIso,
   liveAverageAqi,
   loading,
-  onSelectTime,
-  onSelectRecordedTime,
 }: AqiGraphScreenProps) {
-  const [calendarOpen, setCalendarOpen] = useState(false);
-  const sortedPoints = useMemo(
-    () =>
-      points
-        .filter((p) => Number.isFinite(p.avgAqi) && Number.isFinite(new Date(p.time).getTime()))
-        .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime()),
-    [points],
-  );
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyPoints, setHistoryPoints] = useState<Array<{ time: string; avgAqi: number }>>([]);
+  const [yearlyPm25Loading, setYearlyPm25Loading] = useState(true);
+  const [yearlyPm25DailyCurrentYear, setYearlyPm25DailyCurrentYear] = useState<Map<string, number>>(new Map());
+  const [yearlyPm25DailyPriorYear, setYearlyPm25DailyPriorYear] = useState<Map<string, number>>(new Map());
+  const [visibleMonthKey, setVisibleMonthKey] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${`${now.getMonth() + 1}`.padStart(2, '0')}`;
+  });
+  const [calendarMonthSummaries, setCalendarMonthSummaries] = useState<Map<string, DaySummary>>(new Map());
 
-  const latestPoint = sortedPoints[sortedPoints.length - 1] ?? null;
-  const selectedPoint =
-    sortedPoints.find((p) => p.time === selectedTimeIso) ?? latestPoint;
-
-  const summary = useMemo(() => {
-    if (sortedPoints.length === 0) {
-      return { avg: null as number | null, peak: null as { aqi: number; time: string } | null, above100: 0, above150: 0 };
-    }
-    let total = 0;
-    let peak = sortedPoints[0];
-    let above100 = 0;
-    let above150 = 0;
-    for (const p of sortedPoints) {
-      total += p.avgAqi;
-      if (p.avgAqi > peak.avgAqi) peak = p;
-      if (p.avgAqi >= 100) above100 += 1;
-      if (p.avgAqi >= 150) above150 += 1;
-    }
-    return {
-      avg: total / sortedPoints.length,
-      peak: { aqi: peak.avgAqi, time: peak.time },
-      above100,
-      above150,
-    };
-  }, [sortedPoints]);
-
-  const hourlyAverages = useMemo(() => {
-    const buckets = new Map<number, { total: number; count: number }>();
-    for (const p of sortedPoints) {
-      const hour = new Date(p.time).getHours();
-      const curr = buckets.get(hour) ?? { total: 0, count: 0 };
-      curr.total += p.avgAqi;
-      curr.count += 1;
-      buckets.set(hour, curr);
-    }
-    return Array.from({ length: 24 }, (_, hour) => {
-      const entry = buckets.get(hour);
-      const avg = entry && entry.count > 0 ? entry.total / entry.count : null;
-      return { hour, avg };
-    });
-  }, [sortedPoints]);
-
-  const hourlyMax = useMemo(
-    () =>
-      Math.max(
-        50,
-        ...hourlyAverages.map((h) => h.avg ?? 0),
-      ),
-    [hourlyAverages],
-  );
-
-  const heatmap = useMemo(() => {
-    const grid: Array<Array<number | null>> = Array.from({ length: 7 }, () =>
-      Array.from({ length: 24 }, () => null),
-    );
-    const bucket = new Map<string, { total: number; count: number }>();
-    for (const p of sortedPoints) {
-      const d = new Date(p.time);
-      const dow = d.getDay();
-      const hour = d.getHours();
-      const key = `${dow}-${hour}`;
-      const curr = bucket.get(key) ?? { total: 0, count: 0 };
-      curr.total += p.avgAqi;
-      curr.count += 1;
-      bucket.set(key, curr);
-    }
-    for (let dow = 0; dow < 7; dow += 1) {
-      for (let hour = 0; hour < 24; hour += 1) {
-        const entry = bucket.get(`${dow}-${hour}`);
-        grid[dow][hour] = entry && entry.count > 0 ? entry.total / entry.count : null;
+  useEffect(() => {
+    let cancelled = false;
+    setHistoryLoading(true);
+    const toIso = new Date().toISOString();
+    const fromIso = new Date(Date.now() - GRAPH_HISTORY_WEEKS * 7 * 24 * 60 * 60 * 1000).toISOString();
+    void (async () => {
+      const res = await fetchSensorReadingsBetweenRecordedTimes(fromIso, toIso);
+      if (cancelled) return;
+      if (!res.error) {
+        setHistoryPoints(buildAverageAqiTimeseries(res.purpleAir, res.clarity));
       }
-    }
-    return grid;
-  }, [sortedPoints]);
-
-  const notableEvents = useMemo(
-    () =>
-      sortedPoints
-        .filter((p) => p.avgAqi >= 100)
-        .sort((a, b) => b.avgAqi - a.avgAqi)
-        .slice(0, 5),
-    [sortedPoints],
-  );
-
-  const topHours = useMemo(
-    () =>
-      hourlyAverages
-        .filter((h) => h.avg != null)
-        .sort((a, b) => (b.avg ?? 0) - (a.avg ?? 0))
-        .slice(0, 3),
-    [hourlyAverages],
-  );
-
-  const selectedCategory = selectedPoint ? aqiCategory(selectedPoint.avgAqi) : null;
-  const selectedDateButtonLabel = useMemo(() => formatDateButtonLabel(selectedTimeIso), [selectedTimeIso]);
-  const timeRangePoints = useMemo(() => {
-    if (sortedPoints.length === 0) return [];
-    if (sortedPoints.length === 1) {
-      const only = sortedPoints[0];
-      return [{ ...only, position: 1, selectableTime: only.time }];
-    }
-    const denom = sortedPoints.length - 1;
-    return sortedPoints.map((p, index) => ({
-      ...p,
-      position: index / denom,
-      selectableTime: p.time,
-    }));
-  }, [sortedPoints]);
-
-  const selectedDateFacts = useMemo(() => {
-    if (!selectedTimeIso) {
-      return { count: 0, avg: null as number | null, peak: null as { aqi: number; time: string } | null, above100: 0 };
-    }
-    const dayKey = dateKeyLocal(new Date(selectedTimeIso));
-    const dayPoints = sortedPoints.filter((p) => dateKeyLocal(new Date(p.time)) === dayKey);
-    if (dayPoints.length === 0) {
-      return { count: 0, avg: null as number | null, peak: null as { aqi: number; time: string } | null, above100: 0 };
-    }
-    let total = 0;
-    let peak = dayPoints[0];
-    let above100 = 0;
-    for (const p of dayPoints) {
-      total += p.avgAqi;
-      if (p.avgAqi > peak.avgAqi) peak = p;
-      if (p.avgAqi >= 100) above100 += 1;
-    }
-    return {
-      count: dayPoints.length,
-      avg: total / dayPoints.length,
-      peak: { aqi: peak.avgAqi, time: peak.time },
-      above100,
+      setHistoryLoading(false);
+    })();
+    return () => {
+      cancelled = true;
     };
-  }, [selectedTimeIso, sortedPoints]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setYearlyPm25Loading(true);
+    void (async () => {
+      const res = await fetchDailySensorAqiCalendarRows();
+      if (cancelled) return;
+      const rows = (res.data ?? []).map((row) => ({ pm25: row.pm25, time: row.time }));
+      const now = new Date();
+      const year = now.getFullYear();
+      const currentYearRows = filterDailyPm25RowsForYear(rows, year);
+      const priorYearRows = filterDailyPm25RowsForYear(rows, year - 1);
+      setYearlyPm25DailyCurrentYear(buildDailyPm25Map(currentYearRows));
+      setYearlyPm25DailyPriorYear(buildDailyPm25Map(priorYearRows));
+      setYearlyPm25Loading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const tenMinutePoints = useMemo(() => {
+    const byTime = new Map<string, number>();
+    for (const p of historyPoints) byTime.set(p.time, p.avgAqi);
+    for (const p of points) byTime.set(p.time, p.avgAqi);
+    return Array.from(byTime.entries())
+      .map(([time, avgAqi]) => ({ time, avgAqi }))
+      .filter((p) => Number.isFinite(p.avgAqi) && Number.isFinite(new Date(p.time).getTime()))
+      .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+  }, [historyPoints, points]);
+
+  const rollingWeekHourly = useMemo(
+    () => computeRollingWeekHourlyAverages(tenMinutePoints),
+    [tenMinutePoints],
+  );
+
+  const rollingWeekHasData = useMemo(
+    () => rollingWeekHourly.some((slot) => slot.sampleCount > 0),
+    [rollingWeekHourly],
+  );
+
+  const rollingWeekPeakAvg = useMemo(() => {
+    const withData = rollingWeekHourly.filter((slot) => slot.sampleCount > 0);
+    if (withData.length === 0) return null;
+    return Math.max(...withData.map((slot) => slot.avgAqi));
+  }, [rollingWeekHourly]);
+
+  const [rollingHourChartWidth, setRollingHourChartWidth] = useState(0);
+
+  const handleRollingHourChartLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = e.nativeEvent.layout.width;
+    if (Number.isFinite(w) && w > 0) setRollingHourChartWidth(w);
+  }, []);
+
+  const rollingWeekPeakLineBottom = useMemo(() => {
+    if (rollingWeekPeakAvg == null) return null;
+    return rollingHourBarHeight(rollingWeekPeakAvg);
+  }, [rollingWeekPeakAvg]);
+
+  const monthDayKeys = useMemo(() => enumerateDaysInMonth(visibleMonthKey), [visibleMonthKey]);
+  const monthCategoryCounts = useMemo(() => {
+    const dailyByDay = dailyAqiMapFromDaySummaries(calendarMonthSummaries);
+    return countDaysByCategory(dailyByDay, monthDayKeys);
+  }, [calendarMonthSummaries, monthDayKeys]);
+  const monthCategoryTotal = useMemo(
+    () => (Object.values(monthCategoryCounts) as number[]).reduce((a, b) => a + b, 0),
+    [monthCategoryCounts],
+  );
+
+  const handleVisibleMonthChange = useCallback((monthKey: string) => {
+    setVisibleMonthKey(monthKey);
+    setCalendarMonthSummaries(new Map());
+  }, []);
+
+  const handleMonthDaySummariesChange = useCallback((monthKey: string, summaries: Map<string, DaySummary>) => {
+    setVisibleMonthKey(monthKey);
+    setCalendarMonthSummaries(summaries);
+  }, []);
+
+  const yearlyPm25Chart = useMemo(
+    () => buildYearlyPm25ByMonthChart(yearlyPm25DailyCurrentYear, yearlyPm25DailyPriorYear),
+    [yearlyPm25DailyCurrentYear, yearlyPm25DailyPriorYear],
+  );
+
+  const yearlyPm25HasData = useMemo(
+    () => yearlyPm25Chart.bars.some((bar) => bar.avgPm25 != null),
+    [yearlyPm25Chart.bars],
+  );
+
+  const yearlyPm25ChartMax = useMemo(() => {
+    const values = yearlyPm25Chart.bars
+      .map((bar) => bar.avgPm25)
+      .filter((v): v is number => v != null && Number.isFinite(v));
+    if (values.length === 0) return YEARLY_PM25_CHART_MIN_MAX;
+    return Math.max(YEARLY_PM25_CHART_MIN_MAX, ...values);
+  }, [yearlyPm25Chart.bars]);
+
+  const [yearlyPm25ChartWidth, setYearlyPm25ChartWidth] = useState(0);
+
+  const handleYearlyPm25ChartLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = e.nativeEvent.layout.width;
+    if (Number.isFinite(w) && w > 0) setYearlyPm25ChartWidth(w);
+  }, []);
+
+  const yearlyPm25ShowPriorYearDivider = useMemo(() => {
+    const startIndex = yearlyPm25Chart.priorYearStartsAtIndex;
+    if (startIndex == null) return false;
+    // December: every month has occurred this year; no prior-year proxy months.
+    return new Date().getMonth() !== 11;
+  }, [yearlyPm25Chart.priorYearStartsAtIndex]);
+
+  const yearlyPm25PriorYearDividerX = useMemo(() => {
+    const startIndex = yearlyPm25Chart.priorYearStartsAtIndex;
+    if (!yearlyPm25ShowPriorYearDivider || startIndex == null || yearlyPm25ChartWidth <= 0) {
+      return null;
+    }
+    return (startIndex / yearlyPm25Chart.bars.length) * yearlyPm25ChartWidth;
+  }, [
+    yearlyPm25Chart.bars.length,
+    yearlyPm25Chart.priorYearStartsAtIndex,
+    yearlyPm25ChartWidth,
+    yearlyPm25ShowPriorYearDivider,
+  ]);
+
+  const currentYear = new Date().getFullYear();
 
   return (
     <View style={styles.screenRoot}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>AQI Dashboard</Text>
-        <Text style={styles.subtitle}>Ported graph modules using your live pipeline data</Text>
-        <View style={styles.calendarRow}>
-          {loading ? <Text style={styles.loadingText}>Loading...</Text> : null}
-          <Pressable
-            onPress={() => setCalendarOpen(true)}
-            style={({ pressed }) => [styles.calendarButton, pressed && styles.calendarButtonPressed]}
-            accessibilityRole="button"
-            accessibilityLabel="Open AQI date calendar"
-          >
-            <Ionicons name="calendar-outline" size={18} color="#1f2937" />
-            <Text style={styles.calendarButtonText}>{selectedDateButtonLabel}</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.chartCard}>
-          <Text style={styles.sectionTitle}>Daily AQI timeline</Text>
-          <Text style={styles.sectionSub}>Avg AQI across sensors (10 min cadence)</Text>
-          <TimeRangeModule
-            points={timeRangePoints}
-            active
-            loading={loading}
-            selectedTimeIso={selectedTimeIso}
-            onPreviewTime={onSelectTime}
-            onCommitTime={onSelectTime}
-            graphOnly
-          />
-        </View>
-
-        <View style={styles.statsRow}>
-          <StatCard label="Current AQI" value={selectedPoint ? `${Math.round(selectedPoint.avgAqi)}` : '--'} />
-          <StatCard label="24h Avg AQI" value={summary.avg != null ? `${Math.round(summary.avg)}` : '--'} />
-        </View>
-        <View style={styles.statsRow}>
-          <StatCard label="Readings >=100" value={`${summary.above100}`} />
-          <StatCard label="Readings >=150" value={`${summary.above150}`} />
-        </View>
+        <Text style={styles.title}>AQI trends</Text>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Selected date facts</Text>
-          {selectedDateFacts.count === 0 ? (
-            <Text style={styles.emptyText}>No data for this date in current graph window.</Text>
+          <Text style={styles.sectionTitle}>Rolling 7-day average</Text>
+          <Text style={styles.sectionSub}>
+            Each bar is the average AQI for that hour across all readings in the last 7 days.
+          </Text>
+          {historyLoading || loading ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator size="small" color="#475569" />
+              <Text style={styles.loadingText}>Loading sensor history…</Text>
+            </View>
+          ) : !rollingWeekHasData ? (
+            <Text style={styles.emptyText}>No 7-day averages yet.</Text>
           ) : (
-            <>
-              <Text style={styles.eventText}>Readings: {selectedDateFacts.count}</Text>
-              <Text style={styles.eventText}>Average AQI: {Math.round(selectedDateFacts.avg ?? 0)}</Text>
-              <Text style={styles.eventText}>Readings above 100: {selectedDateFacts.above100}</Text>
-              <Text style={styles.eventText}>
-                Peak AQI: {selectedDateFacts.peak ? `${Math.round(selectedDateFacts.peak.aqi)} at ${new Date(selectedDateFacts.peak.time).toLocaleTimeString()}` : 'No data'}
-              </Text>
-            </>
-          )}
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Average AQI by hour of day</Text>
-          <View style={styles.hourlyChart}>
-            {hourlyAverages.map((entry) => {
-              const barH = entry.avg == null ? 2 : Math.max(4, (entry.avg / hourlyMax) * 88);
-              return (
-                <View key={`h-${entry.hour}`} style={styles.hourBarWrap}>
-                  <View
-                    style={[
-                      styles.hourBar,
-                      {
-                        height: barH,
-                        backgroundColor: entry.avg == null ? '#cbd5e1' : aqiCategory(entry.avg).bg,
-                      },
-                    ]}
-                  />
-                  {entry.hour % 6 === 0 ? (
-                    <Text style={styles.hourLabel}>{entry.hour === 0 ? '12a' : entry.hour === 12 ? '12p' : entry.hour < 12 ? `${entry.hour}a` : `${entry.hour - 12}p`}</Text>
-                  ) : null}
-                </View>
-              );
-            })}
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>AQI by day of week and hour</Text>
-          <Text style={styles.sectionSub}>Heatmap-style view from available rolling data</Text>
-          <View style={styles.heatmap}>
-            {heatmap.map((row, dow) => (
-              <View key={`dow-${dow}`} style={styles.heatmapRow}>
-                <Text style={styles.heatmapYLabel}>{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dow]}</Text>
-                <View style={styles.heatmapCells}>
-                  {row.map((value, hour) => (
+            <View style={styles.rollingHourChart}>
+              <View style={styles.rollingHourBarsArea} onLayout={handleRollingHourChartLayout}>
+                {rollingWeekPeakLineBottom != null && rollingHourChartWidth > 0 ? (
+                  <>
+                    <Svg
+                      width={rollingHourChartWidth}
+                      height={ROLLING_HOUR_CHART_HEIGHT}
+                      style={styles.rollingHourPeakLineSvg}
+                      pointerEvents="none"
+                    >
+                      <Line
+                        x1={0}
+                        y1={ROLLING_HOUR_CHART_HEIGHT - rollingWeekPeakLineBottom}
+                        x2={rollingHourChartWidth}
+                        y2={ROLLING_HOUR_CHART_HEIGHT - rollingWeekPeakLineBottom}
+                        stroke="#64748b"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 4"
+                      />
+                    </Svg>
                     <View
-                      key={`cell-${dow}-${hour}`}
                       style={[
-                        styles.heatCell,
-                        { backgroundColor: value == null ? '#e2e8f0' : aqiCategory(value).bg },
+                        styles.rollingHourPeakLabel,
+                        { bottom: rollingWeekPeakLineBottom - 8 },
                       ]}
-                    />
-                  ))}
+                      pointerEvents="none"
+                    >
+                      <Text style={styles.rollingHourPeakLabelText}>
+                        {rollingWeekPeakAvg == null
+                          ? 'Peak Avg'
+                          : `Peak Avg ${Math.round(rollingWeekPeakAvg)}`}
+                      </Text>
+                    </View>
+                  </>
+                ) : null}
+                <View style={styles.rollingHourBarsRow}>
+                  {rollingWeekHourly.map((slot) => {
+                    const hasData = slot.sampleCount > 0;
+                    const barHeight = hasData ? rollingHourBarHeight(slot.avgAqi) : 4;
+                    const barColor = hasData ? aqiCategory(slot.avgAqi).bg : '#e2e8f0';
+                    return (
+                      <View key={slot.hour} style={styles.rollingHourBarWrap}>
+                        <View
+                          style={[
+                            styles.rollingHourBar,
+                            { height: barHeight, backgroundColor: barColor },
+                            !hasData && styles.rollingHourBarEmpty,
+                          ]}
+                        />
+                      </View>
+                    );
+                  })}
                 </View>
               </View>
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Notable pollution events</Text>
-          {notableEvents.length === 0 ? (
-            <Text style={styles.emptyText}>No readings above AQI 100 in this data window.</Text>
-          ) : (
-            notableEvents.map((event) => (
-              <Text key={event.time} style={styles.eventText}>
-                {new Date(event.time).toLocaleString()}: AQI {Math.round(event.avgAqi)}
-              </Text>
-            ))
+              <View style={styles.rollingHourLabelsRow}>
+                {rollingWeekHourly.map((slot) => {
+                  const showLabel = ROLLING_HOUR_LABEL_HOURS.includes(slot.hour);
+                  return (
+                    <View key={slot.hour} style={styles.rollingHourLabelWrap}>
+                      {showLabel ? (
+                        <Text
+                          style={styles.rollingHourLabel}
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                          minimumFontScale={0.65}
+                        >
+                          {formatRollingHourLabel(slot.hour)}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
           )}
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Advocacy snapshot</Text>
-          <Text style={styles.eventText}>
-            Peak reading: {summary.peak ? `AQI ${Math.round(summary.peak.aqi)} at ${new Date(summary.peak.time).toLocaleTimeString()}` : 'No data'}
-          </Text>
-          <Text style={styles.eventText}>
-            Highest average hours: {topHours.length > 0 ? topHours.map((h) => `${h.hour}:00 (${Math.round(h.avg ?? 0)})`).join(', ') : 'No data'}
-          </Text>
+          <Text style={styles.sectionTitle}>AQI calendar</Text>
+          <Text style={styles.sectionSub}>Daily colors from recorded sensor averages</Text>
+          <AqiColoredCalendar
+            timelineTimesAsc={timelineTimesAsc}
+            timelineIndex={timelineIndex}
+            liveAverageAqi={liveAverageAqi}
+            onVisibleMonthChange={handleVisibleMonthChange}
+            onMonthDaySummariesChange={handleMonthDaySummariesChange}
+          />
+          <View style={styles.monthBreakdown}>
+            {monthCategoryTotal === 0 ? (
+              <Text style={styles.emptyText}>No daily averages recorded this month.</Text>
+            ) : (
+              <View style={styles.categoryLegend}>
+                {(['good', 'moderate', 'usg', 'unhealthy'] as DayAqiCategory[]).map((key) => {
+                  const count = monthCategoryCounts[key];
+                  if (count === 0) return null;
+                  const meta = DAY_AQI_CATEGORY_META[key];
+                  return (
+                    <View key={key} style={styles.categoryLegendRow}>
+                      <View style={[styles.categorySwatch, { backgroundColor: meta.bg }]} />
+                      <Text style={styles.categoryLegendLabel}>
+                        {meta.label}: {count} {count === 1 ? 'day' : 'days'}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+          </View>
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Health impact</Text>
+          <Text style={styles.sectionTitle}>Yearly PM2.5 average by month</Text>
           <Text style={styles.sectionSub}>
-            Current status: {selectedCategory ? `${selectedCategory.label} (AQI ${Math.round(selectedPoint?.avgAqi ?? 0)})` : 'No data'}
+            Daily PM2.5 averaged within each month (Jan–Dec {currentYear}). Months not yet reached use{' '}
+            {currentYear - 1} daily averages.
           </Text>
-          <Text style={styles.healthText}>{healthGuidanceForAqi(selectedPoint?.avgAqi ?? null)}</Text>
+          {yearlyPm25Loading ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator size="small" color="#475569" />
+              <Text style={styles.loadingText}>Loading daily PM2.5…</Text>
+            </View>
+          ) : !yearlyPm25HasData ? (
+            <Text style={styles.emptyText}>No daily PM2.5 averages yet.</Text>
+          ) : (
+            <View style={styles.yearlyPm25Chart}>
+              <View style={styles.yearlyPm25BarsArea} onLayout={handleYearlyPm25ChartLayout}>
+                {yearlyPm25PriorYearDividerX != null && yearlyPm25ChartWidth > 0 ? (
+                  <>
+                    <Svg
+                      width={yearlyPm25ChartWidth}
+                      height={YEARLY_PM25_CHART_HEIGHT}
+                      style={styles.yearlyPm25DividerSvg}
+                      pointerEvents="none"
+                    >
+                      <Line
+                        x1={yearlyPm25PriorYearDividerX}
+                        y1={0}
+                        x2={yearlyPm25PriorYearDividerX}
+                        y2={YEARLY_PM25_CHART_HEIGHT}
+                        stroke="#64748b"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 4"
+                      />
+                    </Svg>
+                    <View
+                      style={[
+                        styles.yearlyPm25PriorYearLabel,
+                        { left: yearlyPm25PriorYearDividerX + 4 },
+                      ]}
+                      pointerEvents="none"
+                    >
+                      <Text style={styles.yearlyPm25PriorYearLabelText}>Previous Year</Text>
+                    </View>
+                  </>
+                ) : null}
+                <View style={styles.yearlyPm25BarsRow}>
+                  {yearlyPm25Chart.bars.map((bar) => {
+                    const hasData = bar.avgPm25 != null;
+                    const barHeight = hasData
+                      ? yearlyPm25BarHeight(bar.avgPm25 as number, yearlyPm25ChartMax)
+                      : 4;
+                    const aqi = hasData ? pm25ToAqi(bar.avgPm25) : null;
+                    const barColor = hasData && aqi != null ? aqiCategory(aqi).bg : '#e2e8f0';
+                    return (
+                      <View key={bar.label} style={styles.yearlyPm25BarWrap}>
+                        <View
+                          style={[
+                            styles.yearlyPm25Bar,
+                            { height: barHeight, backgroundColor: barColor },
+                            !hasData && styles.yearlyPm25BarEmpty,
+                            bar.source === 'prior-year' && styles.yearlyPm25BarPriorYear,
+                          ]}
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+              <View style={styles.yearlyPm25LabelsRow}>
+                {yearlyPm25Chart.bars.map((bar) => (
+                  <View key={bar.label} style={styles.yearlyPm25LabelWrap}>
+                    <Text style={styles.yearlyPm25Label} numberOfLines={1}>
+                      {bar.label}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
         </View>
       </ScrollView>
-      <TimelineCalendarModal
-        visible={calendarOpen}
-        onClose={() => setCalendarOpen(false)}
-        timelineTimesAsc={timelineTimesAsc}
-        timelineIndex={timelineIndex}
-        onPickRecordedTime={(recordedTime) => {
-          setCalendarOpen(false);
-          onSelectRecordedTime(recordedTime);
-        }}
-        liveAverageAqi={liveAverageAqi}
-      />
     </View>
   );
-}
-
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.statCard}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function healthGuidanceForAqi(aqi: number | null): string {
-  if (aqi == null) return 'No AQI data available yet.';
-  if (aqi <= 50) return 'Good: outdoor activity is generally safe for everyone.';
-  if (aqi <= 100) return 'Moderate: unusually sensitive people should monitor symptoms.';
-  if (aqi <= 150) return 'Unhealthy for sensitive groups: reduce prolonged outdoor exertion.';
-  if (aqi <= 200) return 'Unhealthy: everyone should limit outdoor time and consider masking.';
-  if (aqi <= 300) return 'Very unhealthy: stay indoors when possible and run HEPA filtration.';
-  return 'Hazardous: avoid outdoor exposure and treat as an air-quality emergency.';
 }
 
 const styles = StyleSheet.create({
@@ -372,53 +440,15 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '800',
     color: '#0f172a',
-    paddingHorizontal: 16,
-  },
-  subtitle: {
-    marginTop: 4,
     marginBottom: 12,
-    fontSize: 13,
-    color: '#475569',
-    fontWeight: '600',
   },
-  calendarRow: {
+  card: {
     marginBottom: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  loadingText: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '700',
-  },
-  calendarButton: {
-    minHeight: 40,
-    paddingHorizontal: 14,
-    borderRadius: 999,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.94)',
     borderWidth: 1,
     borderColor: '#cbd5e1',
-  },
-  calendarButtonPressed: {
-    opacity: 0.88,
-  },
-  calendarButtonText: {
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-    color: '#334155',
-  },
-  chartCard: {
-    width: '100%',
     padding: 12,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.93)',
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
   },
   sectionTitle: {
     fontSize: 16,
@@ -430,99 +460,195 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748b',
     fontWeight: '600',
-    marginBottom: 8,
+    marginBottom: 10,
   },
-  statsRow: {
-    marginTop: 10,
-    flexDirection: 'row',
-    gap: 10,
-  },
-  statCard: {
-    flex: 1,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.94)',
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    padding: 10,
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: '900',
-    color: '#0f172a',
-  },
-  statLabel: {
-    marginTop: 2,
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '700',
-  },
-  card: {
-    marginTop: 10,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.94)',
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    padding: 10,
-  },
-  hourlyChart: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    height: 106,
-  },
-  hourBarWrap: {
-    width: 10,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    height: '100%',
-  },
-  hourBar: {
-    width: 8,
-    borderRadius: 4,
-  },
-  hourLabel: {
-    marginTop: 4,
-    fontSize: 9,
-    color: '#64748b',
-    fontWeight: '700',
-  },
-  heatmap: {
-    gap: 4,
-  },
-  heatmapRow: {
+  loadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
+    paddingVertical: 24,
+    justifyContent: 'center',
   },
-  heatmapYLabel: {
-    width: 28,
-    fontSize: 9,
-    color: '#475569',
-    fontWeight: '700',
-  },
-  heatmapCells: {
-    flex: 1,
-    flexDirection: 'row',
-    gap: 2,
-  },
-  heatCell: {
-    flex: 1,
-    height: 10,
-    borderRadius: 2,
+  loadingText: {
+    fontSize: 13,
+    color: '#64748b',
+    fontWeight: '600',
   },
   emptyText: {
     fontSize: 13,
     color: '#64748b',
     fontWeight: '600',
+    paddingVertical: 8,
   },
-  eventText: {
+  monthBreakdown: {
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  categoryLegend: {
+    gap: 6,
+  },
+  categoryLegendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  categorySwatch: {
+    width: 14,
+    height: 14,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.12)',
+  },
+  categoryLegendLabel: {
     fontSize: 13,
     color: '#334155',
     fontWeight: '600',
-    marginBottom: 4,
   },
-  healthText: {
-    fontSize: 13,
-    color: '#0f172a',
-    fontWeight: '600',
+  rollingHourChart: {
+    marginTop: 4,
+    gap: 4,
+  },
+  rollingHourBarsArea: {
+    position: 'relative',
+    height: ROLLING_HOUR_CHART_HEIGHT,
+  },
+  rollingHourPeakLineSvg: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    zIndex: 1,
+  },
+  rollingHourPeakLabel: {
+    position: 'absolute',
+    right: 0,
+    zIndex: 2,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+  },
+  rollingHourPeakLabelText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#64748b',
+  },
+  rollingHourBarsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    height: ROLLING_HOUR_CHART_HEIGHT,
+    gap: 1,
+  },
+  rollingHourLabelsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 1,
+  },
+  rollingHourBarWrap: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    height: '100%',
+  },
+  rollingHourLabelWrap: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    height: 12,
+    overflow: 'hidden',
+  },
+  rollingHourBar: {
+    width: '88%',
+    maxWidth: 10,
+    borderRadius: 3,
+    minHeight: 4,
+  },
+  rollingHourBarEmpty: {
+    opacity: 0.55,
+  },
+  rollingHourLabel: {
+    fontSize: 7,
+    lineHeight: 10,
+    color: '#94a3b8',
+    fontWeight: '700',
+    textAlign: 'center',
+    width: '100%',
+  },
+  yearlyPm25Chart: {
+    marginTop: 4,
+    gap: 4,
+  },
+  yearlyPm25BarsArea: {
+    position: 'relative',
+    height: YEARLY_PM25_CHART_HEIGHT,
+  },
+  yearlyPm25DividerSvg: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    zIndex: 1,
+  },
+  yearlyPm25PriorYearLabel: {
+    position: 'absolute',
+    top: 2,
+    zIndex: 2,
+    maxWidth: 88,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+  },
+  yearlyPm25PriorYearLabelText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#64748b',
+  },
+  yearlyPm25BarsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    height: YEARLY_PM25_CHART_HEIGHT,
+    gap: 2,
+  },
+  yearlyPm25LabelsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 2,
+  },
+  yearlyPm25BarWrap: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    height: '100%',
+  },
+  yearlyPm25LabelWrap: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+  },
+  yearlyPm25Bar: {
+    width: '80%',
+    maxWidth: 22,
+    borderRadius: 4,
+    minHeight: 4,
+  },
+  yearlyPm25BarEmpty: {
+    opacity: 0.55,
+  },
+  yearlyPm25BarPriorYear: {
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.18)',
+    borderStyle: 'dashed',
+  },
+  yearlyPm25Label: {
+    fontSize: 9,
+    color: '#94a3b8',
+    fontWeight: '700',
+    textAlign: 'center',
+    width: '100%',
   },
 });

@@ -10,7 +10,7 @@ import {
 } from 'react';
 import Mapbox from '@rnmapbox/maps';
 import type { FeatureCollection, Point } from 'geojson';
-import { Animated, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, LayoutChangeEvent, Pressable, StyleSheet, View } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 
 import type { CurrentKrigingRow } from '../lib/database.types';
@@ -100,6 +100,8 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
   ref,
 ) {
   const wrapRef = useRef<View>(null);
+  const mapLayoutReadyRef = useRef(false);
+  const [mapLayoutReady, setMapLayoutReady] = useState(false);
   const cameraRef = useRef<Mapbox.Camera>(null);
   const lastSensorTapMsRef = useRef(0);
   const [zoomLevel, setZoomLevel] = useState(DEFAULT_ZOOM_LEVEL);
@@ -280,6 +282,15 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
     }
   }, []);
 
+  const handleWrapLayout = useCallback((event: LayoutChangeEvent) => {
+    if (mapLayoutReadyRef.current) return;
+    const { width, height } = event.nativeEvent.layout;
+    if (width > 0 && height > 0) {
+      mapLayoutReadyRef.current = true;
+      setMapLayoutReady(true);
+    }
+  }, []);
+
   useEffect(() => {
     const selectedCoordKey = selected
       ? `${selected.latitude.toFixed(6)}:${selected.longitude.toFixed(6)}`
@@ -356,7 +367,8 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
   }, [selected, selectedCallout, selectedCalloutPlacement, selectedCalloutShiftX]);
 
   return (
-    <View ref={wrapRef} style={styles.wrap}>
+    <View ref={wrapRef} style={styles.wrap} onLayout={handleWrapLayout}>
+      {mapLayoutReady ? (
       <Mapbox.MapView
         style={styles.map}
         styleURL={Mapbox.StyleURL.Street}
@@ -448,6 +460,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
           </Mapbox.PointAnnotation>
         ) : null}
       </Mapbox.MapView>
+      ) : null}
       {!isSelectingAlertLocation ? (
         <MapScaleActions
           onNotificationPress={onNotificationPress}
