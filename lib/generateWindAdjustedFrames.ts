@@ -1,3 +1,7 @@
+/**
+ * Legacy semi-Lagrangian wind backtrace projector (slow on 40×40 grids).
+ * Production modeling uses `lib/modeling/generateAnalogProjectionFrames.ts`.
+ */
 import type { CurrentKrigingRow } from './database.types';
 import {
   type ForecastWindGridByTime,

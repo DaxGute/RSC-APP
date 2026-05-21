@@ -26,7 +26,6 @@ function AppContent() {
     sensors,
     kriging,
     loading,
-    initialLoadProgress,
     error,
     timelineTimesAsc,
     timelineIndex,
@@ -38,7 +37,7 @@ function AppContent() {
     liveAverageAqi,
     averageAqiTimeseries,
   } = useSsfAirQuality();
-  const showInitialSplash = loading && sensors.length === 0 && kriging.length === 0;
+  const showMapLoadSplash = activeTab === 'map' && (loading || timelineLoading);
   return (
     <View style={styles.appRoot}>
       <View style={styles.screenContainer}>
@@ -107,7 +106,7 @@ function AppContent() {
           <Text style={[styles.tabLabel, activeTab === 'education' && styles.tabLabelActive]}>Education</Text>
         </Pressable>
       </View>
-      <InitialLoadSplash visible={showInitialSplash} progress={initialLoadProgress} />
+      <InitialLoadSplash visible={showMapLoadSplash} />
     </View>
   );
 }

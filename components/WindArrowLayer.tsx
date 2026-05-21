@@ -18,9 +18,9 @@ type WindArrowProps = {
 
 const TICK_INTERVAL_MS = 50;
 /** Full animation cycle (burst + wait). */
-const CYCLE_TICKS = 45;
+const CYCLE_TICKS = 90;
 /** Ticks for one downwind pulse; remainder of cycle is quiet. */
-const BURST_TICKS = 24;
+const BURST_TICKS = 70;
 const WAVE_PROJECTION_SCALE = 100;
 /** Gaussian half-width along the burst path (projection units). */
 const PULSE_WIDTH = 1.2;

@@ -35,8 +35,6 @@ export type SsfAirQualityState = {
   kriging: CurrentKrigingRow[];
   sensors: SensorPoint[];
   loading: boolean;
-  /** Initial live load progress [0..1] for sensor + kriging bootstrap. */
-  initialLoadProgress: number;
   error: FetchError | null;
   /** Oldest → newest pipeline `time` values for the timeline scrubber. */
   timelineTimesAsc: string[];
@@ -183,7 +181,6 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
   const [kriging, setKriging] = useState<CurrentKrigingRow[]>([]);
   const [sensors, setSensors] = useState<SensorPoint[]>([]);
   const [loading, setLoading] = useState(true);
-  const [initialLoadProgress, setInitialLoadProgress] = useState(0);
   const [error, setError] = useState<FetchError | null>(null);
 
   const [timelineTimesAsc, setTimelineTimesAsc] = useState<string[]>([]);
@@ -197,6 +194,8 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
   const timelineInitRef = useRef(false);
   const pinnedHistoricalTimeRef = useRef<string | null>(null);
   const mounted = useRef(true);
+  /** After the first successful map payload, background polls skip the loading overlay. */
+  const hasDisplayedMapDataRef = useRef(false);
 
   const recomputeHistoricalKriging = useCallback((sensorRows: SensorPoint[], recordedTime: string) => {
     if (sensorRows.length === 0) return [];
@@ -269,14 +268,13 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
   }, []);
 
   const loadSensors = useCallback(async () => {
-    setLoading(true);
+    const showLoadingOverlay = !hasDisplayedMapDataRef.current;
+    if (showLoadingOverlay) setLoading(true);
     setError(null);
-    setInitialLoadProgress(0.05);
     try {
       const { fromIso, toIso } = rollingRecordedTimeBounds();
       const sensorsRes = await fetchSensorReadingsBetweenRecordedTimes(fromIso, toIso);
       if (!mounted.current) return;
-      setInitialLoadProgress(0.9);
 
       const pa = sensorsRes.purpleAir ?? [];
       const cl = sensorsRes.clarity ?? [];
@@ -296,6 +294,9 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
         setClarity(cl);
         setSensors(sensorPoints);
         setKriging(liveKriging);
+        if (sensorPoints.length > 0 || liveKriging.length > 0) {
+          hasDisplayedMapDataRef.current = true;
+        }
         for (const t of times) {
           const rows = groupedByTime.get(t) ?? [];
           if (rows.length === 0) continue;
@@ -324,9 +325,8 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
         setSensors([]);
         setKriging([]);
       }
-      setInitialLoadProgress(1);
     } finally {
-      if (mounted.current) setLoading(false);
+      if (mounted.current && showLoadingOverlay) setLoading(false);
     }
   }, []);
 
@@ -468,7 +468,6 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     kriging: displayKriging,
     sensors: displaySensors,
     loading,
-    initialLoadProgress,
     error,
     timelineTimesAsc,
     timelineIndex,

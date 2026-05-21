@@ -404,52 +404,60 @@ export function buildWindGridCaption(
   return `${base}${fetched} · ${sample.windSpeedMps.toFixed(1)} m/s toward ${dirs[idx]}`;
 }
 
-export async function fetchForecastWindGrid(): Promise<ForecastWindGridByTime> {
-  const nowMs = Date.now();
-  const fromIso = new Date(nowMs - LOOKBACK_MS).toISOString();
-  const toIso = new Date(nowMs + LOOKAHEAD_MS).toISOString();
+function buildForecastWindGridFromRows(
+  rows: WindGridRow[],
+  displayTargetMs: number,
+  errorMessage: string | null,
+): ForecastWindGridByTime {
+  if (errorMessage) {
+    return {
+      byTime: new Map(),
+      displayTimeUtc: null,
+      displayPoints: [],
+      fetchedAt: null,
+      available: false,
+      errorMessage,
+    };
+  }
 
-  try {
-    const { rows, errorMessage } = await fetchForecastWindGridRowsPaginated(fromIso, toIso);
-
-    if (errorMessage) {
-      return {
-        byTime: new Map(),
-        displayTimeUtc: null,
-        displayPoints: [],
-        fetchedAt: null,
-        available: false,
-        errorMessage,
-      };
-    }
-
-    const points: WindGridPoint[] = [];
-    let latestFetchedAt: string | null = null;
-    for (const row of rows) {
-      const p = rowToPoint(row);
-      if (p) points.push(p);
-      if (row.fetched_at) {
-        if (
-          latestFetchedAt == null ||
-          new Date(row.fetched_at).getTime() > new Date(latestFetchedAt).getTime()
-        ) {
-          latestFetchedAt = row.fetched_at;
-        }
+  const points: WindGridPoint[] = [];
+  let latestFetchedAt: string | null = null;
+  for (const row of rows) {
+    const p = rowToPoint(row);
+    if (p) points.push(p);
+    if (row.fetched_at) {
+      if (
+        latestFetchedAt == null ||
+        new Date(row.fetched_at).getTime() > new Date(latestFetchedAt).getTime()
+      ) {
+        latestFetchedAt = row.fetched_at;
       }
     }
+  }
 
-    const byTime = groupWindGridByTime(points);
-    const displayTimeUtc = pickForecastTimeUtc([...byTime.keys()], nowMs);
-    const displaySlice = displayTimeUtc ? (byTime.get(displayTimeUtc) ?? []) : [];
-    const displayPoints = downsampleWindGridPoints(displaySlice, WIND_ARROW_STRIDE);
+  const byTime = groupWindGridByTime(points);
+  const displayTimeUtc = pickForecastTimeUtc([...byTime.keys()], displayTargetMs);
+  const displaySlice = displayTimeUtc ? (byTime.get(displayTimeUtc) ?? []) : [];
+  const displayPoints = downsampleWindGridPoints(displaySlice, WIND_ARROW_STRIDE);
 
-    return {
-      byTime,
-      displayTimeUtc,
-      displayPoints,
-      fetchedAt: latestFetchedAt,
-      available: byTime.size > 0,
-    };
+  return {
+    byTime,
+    displayTimeUtc,
+    displayPoints,
+    fetchedAt: latestFetchedAt,
+    available: byTime.size > 0,
+  };
+}
+
+/** Fetch wind grids for an arbitrary UTC window (used for historical analog library). */
+export async function fetchForecastWindGridRange(
+  fromIso: string,
+  toIso: string,
+  displayTargetMs = Date.now(),
+): Promise<ForecastWindGridByTime> {
+  try {
+    const { rows, errorMessage } = await fetchForecastWindGridRowsPaginated(fromIso, toIso);
+    return buildForecastWindGridFromRows(rows, displayTargetMs, errorMessage);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -461,4 +469,11 @@ export async function fetchForecastWindGrid(): Promise<ForecastWindGridByTime> {
       errorMessage: msg,
     };
   }
+}
+
+export async function fetchForecastWindGrid(): Promise<ForecastWindGridByTime> {
+  const nowMs = Date.now();
+  const fromIso = new Date(nowMs - LOOKBACK_MS).toISOString();
+  const toIso = new Date(nowMs + LOOKAHEAD_MS).toISOString();
+  return fetchForecastWindGridRange(fromIso, toIso, nowMs);
 }
