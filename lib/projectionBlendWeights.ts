@@ -4,13 +4,14 @@ export type BlendWeights = {
   wind: number;
 };
 
-/** Horizon anchors for blend interpolation (minutes ahead). */
+/** Wind advection is primary for short horizons; trend dominates far out (hourly steps). */
 const BLEND_ANCHORS: Array<{ minutes: number } & BlendWeights> = [
-  { minutes: 0, current: 1, trend: 0, wind: 0 },
-  { minutes: 10, current: 0.9, trend: 0.07, wind: 0.03 },
-  { minutes: 60, current: 0.72, trend: 0.18, wind: 0.1 },
-  { minutes: 180, current: 0.55, trend: 0.25, wind: 0.2 },
-  { minutes: 300, current: 0.45, trend: 0.25, wind: 0.3 },
+  { minutes: 0, current: 1, wind: 0, trend: 0 },
+  { minutes: 60, current: 0.05, wind: 0.5, trend: 0.45 },
+  { minutes: 120, current: 0.03, wind: 0.42, trend: 0.55 },
+  { minutes: 180, current: 0, wind: 0.3, trend: 0.7 },
+  { minutes: 240, current: 0, wind: 0.25, trend: 0.75 },
+  { minutes: 300, current: 0, wind: 0.2, trend: 0.8 },
 ];
 
 function normalizeWeights(w: BlendWeights): BlendWeights {

@@ -440,6 +440,7 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '800',
     color: '#0f172a',
+    marginTop: 30,
     marginBottom: 12,
   },
   card: {

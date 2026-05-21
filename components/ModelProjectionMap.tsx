@@ -18,16 +18,11 @@ import { WindArrowLayer } from './WindArrowLayer';
 import type { CurrentKrigingRow } from '../lib/database.types';
 import { SSF_BBOX } from '../lib/constants/ssf';
 import {
-  buildWindGridCaption,
-  downsampleWindGridPoints,
   fetchForecastWindGrid,
   windGridSliceAtMinutes,
   type ForecastWindGridByTime,
 } from '../lib/forecastWindGrid';
-import {
-  generateProjectionFrameAtStep,
-  type ProjectionDebugMode,
-} from '../lib/generateWindAdjustedFrames';
+import { generateProjectionFrameAtStep } from '../lib/generateWindAdjustedFrames';
 import type { TrendHistoryGrids } from '../lib/projectionTrendHistory';
 import type { MapRegion } from '../lib/mapRegionFromData';
 import {
@@ -79,7 +74,6 @@ export function ModelProjectionMap({
   const [mapLayoutReady, setMapLayoutReady] = useState(false);
   const [mapMountReady, setMapMountReady] = useState(false);
   const [trendHistory, setTrendHistory] = useState<TrendHistoryGrids | null>(null);
-  const [debugMode, setDebugMode] = useState<ProjectionDebugMode>('blend');
 
   const nowGrid = useMemo(() => {
     if (mapKriging.length >= EXPECTED_GRID_CELLS) return mapKriging;
@@ -100,7 +94,6 @@ export function ModelProjectionMap({
     setTrendHistory(null);
     setWindAvailable(false);
     setWindErrorMessage(null);
-    setDebugMode('blend');
 
     if (!heatmapAvailable) {
       setLoading(false);
@@ -149,14 +142,8 @@ export function ModelProjectionMap({
 
   const activeFrame = useMemo(() => {
     if (!heatmapAvailable) return null;
-    return generateProjectionFrameAtStep(
-      nowGrid,
-      selectedStep,
-      windData,
-      trendHistory,
-      debugMode,
-    );
-  }, [nowGrid, selectedStep, windData, trendHistory, debugMode, heatmapAvailable]);
+    return generateProjectionFrameAtStep(nowGrid, selectedStep, windData, trendHistory);
+  }, [nowGrid, selectedStep, windData, trendHistory, heatmapAvailable]);
 
   const displayGrid = activeFrame?.grid ?? nowGrid;
   const displayOpacity = activeFrame?.opacityScale ?? 1;
@@ -175,22 +162,10 @@ export function ModelProjectionMap({
     return () => sub.remove();
   }, [visible, onClose]);
 
-  const windCaption = useMemo(() => {
-    if (!windData) {
-      return 'Wind: Open-Meteo 10 m grid (forecast_wind_grid)';
-    }
-    return buildWindGridCaption(windData, mapRegion.latitude, mapRegion.longitude, minutesAhead);
-  }, [windData, mapRegion.latitude, mapRegion.longitude, minutesAhead]);
-
   const windArrowPoints = useMemo(() => {
     if (!windData?.available) return [];
-    const slice = windGridSliceAtMinutes(windData.byTime, minutesAhead);
-    if (!slice?.length) return [];
-    return downsampleWindGridPoints(slice);
+    return windGridSliceAtMinutes(windData.byTime, minutesAhead) ?? [];
   }, [windData, minutesAhead]);
-
-  const debugLabel =
-    debugMode === 'now' ? 'Debug: Now only' : debugMode === 'wind-only' ? 'Debug: Wind-shifted only' : 'Debug: Final blend';
 
   const handleMajorTickPress = useCallback(
     (stepIndex: number) => {
@@ -214,45 +189,7 @@ export function ModelProjectionMap({
       <View style={styles.root}>
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 8) + 4 }]}>
           <View style={styles.headerTextCol}>
-            <Text style={styles.title}>Experimental persistence + wind-adjusted PM2.5 projection</Text>
-            <Text style={styles.projectionTime}>{projectionHeader}</Text>
-            <Text style={styles.caption}>
-              Blend weights increase trend and wind toward +5h. Uncertainty overlay increases
-              over time; concentrations stay anchored to observations.
-            </Text>
-            <Text style={styles.windCaption}>{windCaption}</Text>
-            {__DEV__ ? (
-              <View style={styles.debugRow}>
-                <Text style={styles.debugLabel}>{debugLabel}</Text>
-                <View style={styles.debugPills}>
-                  {(
-                    [
-                      ['now', 'Now'],
-                      ['wind-only', 'Wind only'],
-                      ['blend', 'Blend'],
-                    ] as const
-                  ).map(([mode, label]) => (
-                    <Pressable
-                      key={mode}
-                      onPress={() => setDebugMode(mode)}
-                      style={[
-                        styles.debugPill,
-                        debugMode === mode && styles.debugPillActive,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.debugPillText,
-                          debugMode === mode && styles.debugPillTextActive,
-                        ]}
-                      >
-                        {label}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              </View>
-            ) : null}
+            <Text style={styles.title}>Experimental wind-advected PM2.5 projection</Text>
           </View>
           <Pressable
             onPress={onClose}
@@ -314,10 +251,14 @@ export function ModelProjectionMap({
                   layerIdPrefix="model-projection"
                 />
               ) : null}
-              <WindArrowLayer
-                points={windArrowPoints}
-                visible={windAvailable && windArrowPoints.length > 0}
-              />
+              {!loading ? (
+                <WindArrowLayer
+                  key={`wind-${minutesAhead}`}
+                  layerIdPrefix="model-projection"
+                  points={windArrowPoints}
+                  visible={windAvailable && windArrowPoints.length > 0}
+                />
+              ) : null}
             </Mapbox.MapView>
           ) : null}
           {loading ? (
@@ -345,7 +286,7 @@ export function ModelProjectionMap({
                 pressed && stepNavEnabled && selectedStep > 0 && styles.stepNavBtnPressed,
               ]}
               accessibilityRole="button"
-              accessibilityLabel="Previous 10 minutes"
+              accessibilityLabel="Previous hour"
             >
               <Ionicons
                 name="chevron-back"
@@ -358,7 +299,7 @@ export function ModelProjectionMap({
                   (!stepNavEnabled || selectedStep <= 0) && styles.stepNavBtnTextDisabled,
                 ]}
               >
-                −10m
+                −1h
               </Text>
             </Pressable>
             <Text style={styles.stepNavCenter}>{projectionHeader}</Text>
@@ -375,7 +316,7 @@ export function ModelProjectionMap({
                   styles.stepNavBtnPressed,
               ]}
               accessibilityRole="button"
-              accessibilityLabel="Next 10 minutes"
+              accessibilityLabel="Next hour"
             >
               <Text
                 style={[
@@ -384,7 +325,7 @@ export function ModelProjectionMap({
                     styles.stepNavBtnTextDisabled,
                 ]}
               >
-                +10m
+                +1h
               </Text>
               <Ionicons
                 name="chevron-forward"
@@ -426,14 +367,6 @@ export function ModelProjectionMap({
               </Pressable>
             ))}
           </View>
-          <Pressable
-            onPress={onClose}
-            style={({ pressed }) => [styles.doneBtn, pressed && styles.doneBtnPressed]}
-            accessibilityRole="button"
-            accessibilityLabel="Done"
-          >
-            <Text style={styles.doneBtnText}>Done</Text>
-          </Pressable>
         </View>
       </View>
     </View>
@@ -473,57 +406,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#0f172a',
     letterSpacing: 0.1,
-  },
-  projectionTime: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#1e40af',
-    letterSpacing: 0.1,
-  },
-  caption: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: '#64748b',
-  },
-  windCaption: {
-    fontSize: 11,
-    lineHeight: 16,
-    color: '#475569',
-    marginTop: 2,
-  },
-  debugRow: {
-    marginTop: 6,
-    gap: 6,
-  },
-  debugLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#64748b',
-  },
-  debugPills: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  debugPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    backgroundColor: '#fff',
-  },
-  debugPillActive: {
-    borderColor: '#1e40af',
-    backgroundColor: '#dbeafe',
-  },
-  debugPillText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#64748b',
-  },
-  debugPillTextActive: {
-    color: '#1e3a8a',
   },
   closeBtn: {
     width: 36,
@@ -650,7 +532,7 @@ const styles = StyleSheet.create({
   stepNavCenter: {
     flex: 1,
     textAlign: 'center',
-    fontSize: 12,
+    fontSize: 16,
     fontWeight: '800',
     color: '#1e40af',
   },
@@ -684,21 +566,5 @@ const styles = StyleSheet.create({
   },
   tickLabelDisabled: {
     color: '#94a3b8',
-  },
-  doneBtn: {
-    minHeight: 44,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1e40af',
-  },
-  doneBtnPressed: {
-    opacity: 0.9,
-  },
-  doneBtnText: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#fff',
-    letterSpacing: 0.2,
   },
 });

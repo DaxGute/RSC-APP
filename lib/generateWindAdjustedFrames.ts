@@ -1,5 +1,4 @@
 import type { CurrentKrigingRow } from './database.types';
-import { SSF_BBOX } from './constants/ssf';
 import {
   type ForecastWindGridByTime,
   windGridSliceAtMinutes,
@@ -30,6 +29,14 @@ export type ProjectionFrame = {
 const DT_SECONDS = 600;
 const METERS_PER_DEG_LAT = 111_320;
 const RENDER_SMOOTH_STRENGTH = 0.04;
+/** e-folding time for weak PM₂.₅ decay (minutes). ~2% loss at +10m, ~6% at +30m. */
+const DECAY_TAU_MINUTES = 480;
+/** Background relaxation begins after this horizon (minutes). */
+const RELAX_START_MINUTES = 30;
+const MAX_RELAX_WEIGHT = 0.28;
+const MAX_UNCERTAINTY = 0.55;
+/** Displacement (m) at which displacement-driven uncertainty saturates. */
+const DISP_UNCERTAINTY_SCALE_M = 6000;
 
 type Grid2D = {
   latAsc: number[];
@@ -193,45 +200,137 @@ function trendAdjustedPm25(
   return Math.max(0, currentPm + clamp(delta, -cap, cap));
 }
 
-function integratedWindOffsetDeg(
+function isInsideGrid(grid: Grid2D, lat: number, lon: number): boolean {
+  const latMin = grid.latAsc[0];
+  const latMax = grid.latAsc[grid.latAsc.length - 1];
+  const lonMin = grid.lonAsc[0];
+  const lonMax = grid.lonAsc[grid.lonAsc.length - 1];
+  return lat >= latMin && lat <= latMax && lon >= lonMin && lon <= lonMax;
+}
+
+type BacktraceResult = {
+  sourceLat: number;
+  sourceLon: number;
+  displacementM: number;
+  outOfBounds: boolean;
+};
+
+/**
+ * Semi-Lagrangian backtrace: walk backward through each 10-minute wind slice,
+ * updating position with wind at the trace point (not a single bulk offset).
+ */
+function semiLagrangianBacktrace(
   byTime: ForecastWindGridByTime['byTime'],
+  grid: Grid2D,
   lat: number,
   lon: number,
   minutesAhead: number,
-): { dLatDeg: number; dLonDeg: number } {
-  const centerLat = (SSF_BBOX.nwLat + SSF_BBOX.seLat) / 2;
-  const mPerDegLon = METERS_PER_DEG_LAT * Math.max(0.2, Math.cos((centerLat * Math.PI) / 180));
+): BacktraceResult {
+  let latP = lat;
+  let lonP = lon;
+  let displacementM = 0;
+  let hadWind = false;
+  /** Sub-hour integration steps; UI horizon steps are hourly (see `projectionTimeLabels`). */
+  const subStepMinutes = 10;
+  const steps = Math.max(1, Math.floor(minutesAhead / subStepMinutes));
 
-  let dLatDeg = 0;
-  let dLonDeg = 0;
-  const steps = Math.max(1, Math.floor(minutesAhead / 10));
-  for (let s = 1; s <= steps; s += 1) {
-    const minutes = Math.min(s * 10, minutesAhead);
+  for (let i = 0; i < steps; i += 1) {
+    const minutes = Math.max(0, minutesAhead - i * subStepMinutes);
     const slice = windGridSliceAtMinutes(byTime, minutes);
-    const sample = windVectorAtLatLon(slice, lat, lon);
+    const sample = windVectorAtLatLon(slice, latP, lonP);
     if (!sample) continue;
-    dLatDeg += (sample.vMs * DT_SECONDS) / METERS_PER_DEG_LAT;
-    dLonDeg += (sample.uMs * DT_SECONDS) / mPerDegLon;
+    hadWind = true;
+    const mPerDegLon = METERS_PER_DEG_LAT * Math.max(0.2, Math.cos((latP * Math.PI) / 180));
+    latP -= (sample.vMs * DT_SECONDS) / METERS_PER_DEG_LAT;
+    lonP -= (sample.uMs * DT_SECONDS) / mPerDegLon;
+    displacementM += Math.hypot(sample.uMs * DT_SECONDS, sample.vMs * DT_SECONDS);
   }
-  return { dLatDeg, dLonDeg };
+
+  return {
+    sourceLat: latP,
+    sourceLon: lonP,
+    displacementM: hadWind ? displacementM : 0,
+    outOfBounds: !isInsideGrid(grid, latP, lonP),
+  };
 }
 
-function windShiftedPm25(
+function meanGridPm25(grid: Grid2D): number {
+  let sum = 0;
+  let count = 0;
+  for (const row of grid.values) {
+    for (const v of row) {
+      if (Number.isFinite(v)) {
+        sum += v;
+        count += 1;
+      }
+    }
+  }
+  return count > 0 ? sum / count : 12;
+}
+
+/** Weak decay + long-horizon relaxation toward domain-mean PM₂.₅. */
+function applyAdvectionDecay(
+  advectedPm: number,
+  backgroundPm: number,
+  minutesAhead: number,
+): number {
+  const conservation = Math.exp(-minutesAhead / DECAY_TAU_MINUTES);
+  let relax = 0;
+  if (minutesAhead > RELAX_START_MINUTES) {
+    relax = Math.min(
+      MAX_RELAX_WEIGHT,
+      ((minutesAhead - RELAX_START_MINUTES) / (300 - RELAX_START_MINUTES)) * MAX_RELAX_WEIGHT,
+    );
+  }
+  const conserved = conservation * advectedPm;
+  return (1 - relax) * conserved + relax * backgroundPm;
+}
+
+function advectedPm25(
   nowGrid: Grid2D,
   lat: number,
   lon: number,
   byTime: ForecastWindGridByTime['byTime'],
   minutesAhead: number,
-): number {
-  if (minutesAhead <= 0) return sampleBilinear(nowGrid, lat, lon);
-  const { dLatDeg, dLonDeg } = integratedWindOffsetDeg(byTime, lat, lon, minutesAhead);
-  return sampleBilinear(nowGrid, lat - dLatDeg, lon - dLonDeg);
+  backgroundPm: number,
+): { pm: number; displacementM: number; outOfBounds: boolean } {
+  if (minutesAhead <= 0) {
+    return {
+      pm: sampleBilinear(nowGrid, lat, lon),
+      displacementM: 0,
+      outOfBounds: false,
+    };
+  }
+
+  const trace = semiLagrangianBacktrace(byTime, nowGrid, lat, lon, minutesAhead);
+  const raw = trace.outOfBounds
+    ? sampleBilinear(nowGrid, lat, lon)
+    : sampleBilinear(nowGrid, trace.sourceLat, trace.sourceLon);
+
+  return {
+    pm: applyAdvectionDecay(raw, backgroundPm, minutesAhead),
+    displacementM: trace.displacementM,
+    outOfBounds: trace.outOfBounds,
+  };
 }
 
-function uncertaintyForStep(stepIndex: number): number {
-  const t = stepIndex / PROJECTION_FUTURE_STEPS;
-  return t * 0.42;
+function uncertaintyForStep(
+  stepIndex: number,
+  maxDisplacementM: number,
+  oobFraction: number,
+): number {
+  const horizon = (stepIndex / PROJECTION_FUTURE_STEPS) * 0.28;
+  const displacement =
+    Math.min(1, maxDisplacementM / DISP_UNCERTAINTY_SCALE_M) * 0.22;
+  const oob = Math.min(0.18, oobFraction * 0.35);
+  return Math.min(MAX_UNCERTAINTY, horizon + displacement + oob);
 }
+
+type ProjectedGridResult = {
+  grid: Grid2D;
+  maxDisplacementM: number;
+  oobFraction: number;
+};
 
 function buildProjectedGrid(
   nowGrid: Grid2D,
@@ -239,27 +338,51 @@ function buildProjectedGrid(
   wind: ForecastWindGridByTime | null,
   history: TrendHistoryGrids | null,
   debugMode: ProjectionDebugMode,
-): Grid2D {
+): ProjectedGridResult {
   const m = nowGrid.latAsc.length;
   const n = nowGrid.lonAsc.length;
   const values: number[][] = [];
   const windOk = wind?.available === true && (wind.byTime.size ?? 0) > 0;
   const weights = blendWeightsForMinutes(minutesAhead);
+  const backgroundPm = meanGridPm25(nowGrid);
+  let maxDisplacementM = 0;
+  let oobCells = 0;
+  let cellCount = 0;
 
   for (let yi = 0; yi < m; yi += 1) {
     const row: number[] = [];
     const lat = nowGrid.latAsc[yi];
     for (let xi = 0; xi < n; xi += 1) {
       const lon = nowGrid.lonAsc[xi];
+      cellCount += 1;
       const currentPm = sampleBilinear(nowGrid, lat, lon);
       const rate = trendRateUgPerMin(lat, lon, currentPm, history);
       const trendPm =
         history && (history.grid10mAgo || history.grid20mAgo || history.grid30mAgo)
           ? trendAdjustedPm25(currentPm, rate, minutesAhead)
           : currentPm;
-      const windPm = windOk
-        ? windShiftedPm25(nowGrid, lat, lon, wind!.byTime, minutesAhead)
-        : currentPm;
+
+      let advectedPm = currentPm;
+      let displacementM = 0;
+      let outOfBounds = false;
+      if (windOk) {
+        const advection = advectedPm25(
+          nowGrid,
+          lat,
+          lon,
+          wind!.byTime,
+          minutesAhead,
+          backgroundPm,
+        );
+        advectedPm = advection.pm;
+        displacementM = advection.displacementM;
+        outOfBounds = advection.outOfBounds;
+      }
+
+      if (displacementM > maxDisplacementM) maxDisplacementM = displacementM;
+      if (outOfBounds) oobCells += 1;
+
+      const windPm = outOfBounds ? currentPm : advectedPm;
 
       let pm: number;
       if (debugMode === 'now') {
@@ -279,7 +402,12 @@ function buildProjectedGrid(
   if (minutesAhead > 0 && debugMode === 'blend') {
     out = lightSmoothForRender(out, RENDER_SMOOTH_STRENGTH);
   }
-  return out;
+
+  return {
+    grid: out,
+    maxDisplacementM,
+    oobFraction: cellCount > 0 ? oobCells / cellCount : 0,
+  };
 }
 
 export type GenerateWindAdjustedFramesResult = {
@@ -300,24 +428,38 @@ export function generateProjectionFrameAtStep(
 
   const step = clamp(stepIndex, 0, PROJECTION_FRAME_COUNT - 1);
   const minutesAhead = minutesAheadForStep(step);
-  const projected =
-    step === 0 || debugMode === 'now'
-      ? nowGrid2d
-      : buildProjectedGrid(nowGrid2d, minutesAhead, wind, trendHistory ?? null, debugMode);
+  if (step === 0 || debugMode === 'now') {
+    return {
+      stepIndex: step,
+      minutesAhead,
+      label: formatStepShortLabel(minutesAhead),
+      grid: currentGrid,
+      opacityScale: 1,
+      uncertaintyOverlay: 0,
+    };
+  }
+
+  const { grid: projected, maxDisplacementM, oobFraction } = buildProjectedGrid(
+    nowGrid2d,
+    minutesAhead,
+    wind,
+    trendHistory ?? null,
+    debugMode,
+  );
 
   return {
     stepIndex: step,
     minutesAhead,
     label: formatStepShortLabel(minutesAhead),
-    grid: step === 0 ? currentGrid : gridToRows(projected),
+    grid: gridToRows(projected),
     opacityScale: 1,
-    uncertaintyOverlay: uncertaintyForStep(step),
+    uncertaintyOverlay: uncertaintyForStep(step, maxDisplacementM, oobFraction),
   };
 }
 
 /**
- * Persistence + weak wind + gradual trend model.
- * Each frame is built from the Now grid (not chained from the previous frame).
+ * Semi-Lagrangian wind advection (primary short-term) + trend (long horizon).
+ * Each frame is rebuilt from the current kriging grid — never chained.
  */
 export function generateWindAdjustedFrames(
   currentGrid: CurrentKrigingRow[],

@@ -1,3 +1,8 @@
+import { SSF_BBOX } from './constants/ssf';
+import {
+  PROJECTION_FUTURE_STEPS,
+  PROJECTION_STEP_MINUTES,
+} from './projectionTimeLabels';
 import { supabase } from './supabase';
 
 export type WindGridPoint = {
@@ -32,9 +37,26 @@ type WindGridRow = {
   fetched_at: string;
 };
 
+/** Open-Meteo wind cache grid (matches pipeline `forecast_wind_grid`). */
+export const FORECAST_WIND_GRID_STEPS = 20;
+export const EXPECTED_WIND_GRID_CELLS =
+  FORECAST_WIND_GRID_STEPS * FORECAST_WIND_GRID_STEPS;
+
+/** PostgREST default page size (see `fetchAirQuality.ts`). */
+const POSTGREST_MAX_ROWS_PER_REQUEST = 1000;
+const WIND_GRID_PAGE_SIZE = POSTGREST_MAX_ROWS_PER_REQUEST;
+const WIND_GRID_FETCH_HARD_MAX = 50_000;
+
 const LOOKBACK_MS = 30 * 60 * 1000;
-const LOOKAHEAD_MS = 6 * 60 * 60 * 1000;
-export const WIND_ARROW_STRIDE = 2;
+/** Cover full projection slider (+5h) with margin for nearest-time lookup. */
+const LOOKAHEAD_MS =
+  PROJECTION_FUTURE_STEPS * PROJECTION_STEP_MINUTES * 60 * 1000 + 30 * 60 * 1000;
+
+/** 1 = full 20×20 arrows on the map. */
+export const WIND_ARROW_STRIDE = 1;
+
+const WIND_GRID_COLUMNS =
+  'forecast_time_utc, lat, lon, wind_speed_mps, wind_direction_deg, fetched_at';
 
 /** Direction air moves toward (degrees, 0 = north), for map symbol rotation. */
 export function windAdvectionAngleDeg(uMs: number, vMs: number): number {
@@ -81,12 +103,21 @@ function rowToPoint(row: WindGridRow): WindGridPoint | null {
   };
 }
 
+/** Align DB stamps to projection steps so near-duplicate ISO strings share one bucket. */
+export function normalizeForecastTimeUtc(iso: string): string {
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return iso;
+  const stepMs = PROJECTION_STEP_MINUTES * 60 * 1000;
+  return new Date(Math.round(ms / stepMs) * stepMs).toISOString();
+}
+
 export function groupWindGridByTime(rows: WindGridPoint[]): Map<string, WindGridPoint[]> {
   const byTime = new Map<string, WindGridPoint[]>();
   for (const row of rows) {
-    const list = byTime.get(row.forecastTimeUtc) ?? [];
-    list.push(row);
-    byTime.set(row.forecastTimeUtc, list);
+    const key = normalizeForecastTimeUtc(row.forecastTimeUtc);
+    const list = byTime.get(key) ?? [];
+    list.push({ ...row, forecastTimeUtc: key });
+    byTime.set(key, list);
   }
   return byTime;
 }
@@ -117,6 +148,66 @@ export function downsampleWindGridPoints(
   const latKeep = new Set(lats.filter((_, i) => i % stride === 0));
   const lonKeep = new Set(lons.filter((_, i) => i % stride === 0));
   return points.filter((p) => latKeep.has(p.lat) && lonKeep.has(p.lon));
+}
+
+function positiveSpacings(sorted: number[]): number[] {
+  const diffs: number[] = [];
+  for (let i = 1; i < sorted.length; i += 1) {
+    const d = sorted[i] - sorted[i - 1];
+    if (d > 1e-7) diffs.push(d);
+  }
+  return diffs;
+}
+
+function latticeStepFromAxis(sorted: number[]): number {
+  const diffs = positiveSpacings(sorted);
+  if (diffs.length === 0) return 0;
+  const min = Math.min(...diffs);
+  const max = Math.max(...diffs);
+  if (max > min * 1.6) return max;
+  if (sorted.length > FORECAST_WIND_GRID_STEPS + 2) {
+    return (min * (sorted.length - 1)) / (FORECAST_WIND_GRID_STEPS - 1);
+  }
+  return min;
+}
+
+/**
+ * One arrow per 20×20 pipeline cell. Collapses finer lattices and near-duplicate
+ * lat/lon rows onto the SSF wind grid spacing.
+ */
+export function collapseWindGridForMap(points: WindGridPoint[]): WindGridPoint[] {
+  if (points.length === 0) return points;
+
+  const lats = [...new Set(points.map((p) => p.lat))].sort((a, b) => a - b);
+  const lons = [...new Set(points.map((p) => p.lon))].sort((a, b) => a - b);
+  if (lats.length < 2 || lons.length < 2) return points;
+
+  let latStep = latticeStepFromAxis(lats);
+  let lonStep = latticeStepFromAxis(lons);
+  const bboxLatStep =
+    (SSF_BBOX.nwLat - SSF_BBOX.seLat) / Math.max(1, FORECAST_WIND_GRID_STEPS - 1);
+  const bboxLonStep =
+    (SSF_BBOX.seLon - SSF_BBOX.nwLon) / Math.max(1, FORECAST_WIND_GRID_STEPS - 1);
+  if (!(latStep > 0)) latStep = bboxLatStep;
+  if (!(lonStep > 0)) lonStep = bboxLonStep;
+
+  const latMin = lats[0];
+  const lonMin = lons[0];
+  const byCell = new Map<string, WindGridPoint>();
+
+  for (const p of points) {
+    const li = Math.round((p.lat - latMin) / latStep);
+    const lj = Math.round((p.lon - lonMin) / lonStep);
+    const key = `${li}:${lj}`;
+    const snapped: WindGridPoint = {
+      ...p,
+      lat: latMin + li * latStep,
+      lon: lonMin + lj * lonStep,
+    };
+    if (!byCell.has(key)) byCell.set(key, snapped);
+  }
+
+  return [...byCell.values()].sort((a, b) => a.lat - b.lat || a.lon - b.lon);
 }
 
 function buildSpatialGrid(points: WindGridPoint[]): {
@@ -229,9 +320,65 @@ export function windGridSliceAtMinutes(
 ): WindGridPoint[] | null {
   const times = [...byTime.keys()];
   if (times.length === 0) return null;
-  const iso = pickForecastTimeUtc(times, nowMs + minutesFromNow * 60 * 1000);
+  const targetMs = nowMs + minutesFromNow * 60 * 1000;
+  const stepMs = PROJECTION_STEP_MINUTES * 60 * 1000;
+  const snappedTargetMs = Math.round(targetMs / stepMs) * stepMs;
+  const toleranceMs = stepMs / 2;
+
+  let iso: string | null = null;
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const candidate of times) {
+    const ms = new Date(candidate).getTime();
+    if (!Number.isFinite(ms)) continue;
+    const diff = Math.abs(ms - snappedTargetMs);
+    if (diff <= toleranceMs) {
+      return collapseWindGridForMap(byTime.get(candidate) ?? []);
+    }
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      iso = candidate;
+    }
+  }
+
   if (!iso) return null;
-  return byTime.get(iso) ?? null;
+  return collapseWindGridForMap(byTime.get(iso) ?? []);
+}
+
+async function fetchForecastWindGridRowsPaginated(
+  fromIso: string,
+  toIso: string,
+): Promise<{ rows: WindGridRow[]; errorMessage: string | null }> {
+  const rows: WindGridRow[] = [];
+  let offset = 0;
+
+  while (rows.length < WIND_GRID_FETCH_HARD_MAX) {
+    const end = offset + WIND_GRID_PAGE_SIZE - 1;
+    const { data, error } = await supabase
+      .from('forecast_wind_grid')
+      .select(WIND_GRID_COLUMNS)
+      .gte('forecast_time_utc', fromIso)
+      .lte('forecast_time_utc', toIso)
+      .order('forecast_time_utc', { ascending: true })
+      .order('lat', { ascending: true })
+      .order('lon', { ascending: true })
+      .range(offset, end);
+
+    if (error) {
+      return { rows: [], errorMessage: error.message };
+    }
+
+    const batch = (data ?? []) as WindGridRow[];
+    if (batch.length === 0) break;
+    for (const row of batch) {
+      rows.push(row);
+      if (rows.length >= WIND_GRID_FETCH_HARD_MAX) break;
+    }
+    if (rows.length >= WIND_GRID_FETCH_HARD_MAX) break;
+    offset += batch.length;
+    if (batch.length < WIND_GRID_PAGE_SIZE) break;
+  }
+
+  return { rows, errorMessage: null };
 }
 
 export function buildWindGridCaption(
@@ -263,29 +410,22 @@ export async function fetchForecastWindGrid(): Promise<ForecastWindGridByTime> {
   const toIso = new Date(nowMs + LOOKAHEAD_MS).toISOString();
 
   try {
-    const { data, error } = await supabase
-      .from('forecast_wind_grid')
-      .select(
-        'forecast_time_utc, lat, lon, wind_speed_mps, wind_direction_deg, fetched_at',
-      )
-      .gte('forecast_time_utc', fromIso)
-      .lte('forecast_time_utc', toIso)
-      .order('forecast_time_utc', { ascending: true });
+    const { rows, errorMessage } = await fetchForecastWindGridRowsPaginated(fromIso, toIso);
 
-    if (error) {
+    if (errorMessage) {
       return {
         byTime: new Map(),
         displayTimeUtc: null,
         displayPoints: [],
         fetchedAt: null,
         available: false,
-        errorMessage: error.message,
+        errorMessage,
       };
     }
 
     const points: WindGridPoint[] = [];
     let latestFetchedAt: string | null = null;
-    for (const row of (data ?? []) as WindGridRow[]) {
+    for (const row of rows) {
       const p = rowToPoint(row);
       if (p) points.push(p);
       if (row.fetched_at) {
@@ -301,14 +441,14 @@ export async function fetchForecastWindGrid(): Promise<ForecastWindGridByTime> {
     const byTime = groupWindGridByTime(points);
     const displayTimeUtc = pickForecastTimeUtc([...byTime.keys()], nowMs);
     const displaySlice = displayTimeUtc ? (byTime.get(displayTimeUtc) ?? []) : [];
-    const displayPoints = downsampleWindGridPoints(displaySlice);
+    const displayPoints = downsampleWindGridPoints(displaySlice, WIND_ARROW_STRIDE);
 
     return {
       byTime,
       displayTimeUtc,
       displayPoints,
       fetchedAt: latestFetchedAt,
-      available: displayPoints.length > 0,
+      available: byTime.size > 0,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
