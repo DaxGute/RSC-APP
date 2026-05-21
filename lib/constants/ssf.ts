@@ -1,8 +1,8 @@
 /** South San Francisco map bounds — matches SSF-AQI `app.py`. */
 export const NW_LAT = 37.7000;
-export const NW_LNG = -122.4600;
-export const SE_LAT = 37.6200;
-export const SE_LNG = -122.3600;
+export const NW_LNG = -122.500;
+export const SE_LAT = 37.6000;
+export const SE_LNG = -122.3500;
 
 export const SSF_BBOX = {
   nwLat: NW_LAT,

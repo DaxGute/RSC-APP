@@ -31,6 +31,7 @@ import { AlertLocationSelectionBanner } from './AlertLocationSelectionBanner';
 import { AqiPanel } from './AqiPanel';
 import { SsfMap, type SsfMapHandle } from './SsfMap';
 import { TimeRangeModule } from './TimeRangeModule';
+import { ModelProjectionMap } from './ModelProjectionMap';
 import { TimelineCalendarModal } from './TimelineCalendarModal';
 
 const FILTER_MIN_YEAR = 2021;
@@ -352,6 +353,8 @@ export function SsfAirQualityScreen({
   const dayLoadGenRef = useRef(0);
   const mapRef = useRef<SsfMapHandle>(null);
   const [openReminderModalSignal, setOpenReminderModalSignal] = useState(0);
+  const [modelProjectionOpen, setModelProjectionOpen] = useState(false);
+  const [modelProjectionPending, setModelProjectionPending] = useState(false);
   const [isSelectingAlertLocation, setIsSelectingAlertLocation] = useState(false);
   const pendingOpenReminderRef = useRef(false);
   const isSelectingAlertLocationRef = useRef(false);
@@ -420,6 +423,25 @@ export function SsfAirQualityScreen({
     }
     prevIsSelectedDateTodayRef.current = isSelectedDateToday;
   }, [isSelectedDateToday, onTimelineIndexChange, timelineIndex, timelineTimesAsc, todayTimelineTimesAsc]);
+
+  const goToTodayLatestReading = useCallback(() => {
+    setPendingNoDataBucketTime(null);
+    setTimeFilterMode('Day');
+    setSelectedDayLabel('Today');
+    dayLoadGenRef.current += 1;
+    setPastDayAverageAqiTimeseries([]);
+    setDayPastRowsLoading(false);
+    if (timelineTimesAsc.length > 0) {
+      const latestTimelineIso = [...timelineTimesAsc]
+        .filter((iso) => Number.isFinite(new Date(iso).getTime()))
+        .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
+        .at(-1);
+      if (latestTimelineIso) {
+        const latestSourceIndex = timelineTimesAsc.findIndex((iso) => iso === latestTimelineIso);
+        if (latestSourceIndex >= 0) onTimelineIndexChange(latestSourceIndex);
+      }
+    }
+  }, [onTimelineIndexChange, timelineTimesAsc]);
 
   const { reminder, setReminder, clearReminder, isReminderForCoordinate } = useAirQualityReminder(
     sensors,
@@ -949,6 +971,32 @@ export function SsfAirQualityScreen({
   const mapSensors = showInsufficientOverlay ? [] : sensors;
   const mapKriging = showInsufficientOverlay ? [] : kriging;
 
+  const handleModelingPress = useCallback(() => {
+    closeTimeFilterMenuRef.current();
+    setTimeFilterMenuOpen(false);
+    setDayMenuOpen(false);
+    setMonthMenuOpen(false);
+    goToTodayLatestReading();
+    setModelProjectionPending(true);
+  }, [goToTodayLatestReading]);
+
+  useEffect(() => {
+    if (!modelProjectionPending) return;
+    if (timeFilterMode !== 'Day' || selectedDayLabel !== 'Today') return;
+    if (!viewingLive || timelineLoading || loading) return;
+    if (mapKriging.length === 0) return;
+    setModelProjectionPending(false);
+    setModelProjectionOpen(true);
+  }, [
+    loading,
+    mapKriging.length,
+    modelProjectionPending,
+    selectedDayLabel,
+    timeFilterMode,
+    timelineLoading,
+    viewingLive,
+  ]);
+
   // Drop any open sensor callout when entering an empty-map state, since the
   // pin it referenced is no longer on screen.
   useEffect(() => {
@@ -1040,6 +1088,7 @@ export function SsfAirQualityScreen({
       <View style={styles.screenContent}>
         <View style={styles.main}>
           <View style={styles.mapCol}>
+            {!modelProjectionOpen ? (
             <SsfMap
               ref={mapRef}
               sensors={mapSensors}
@@ -1111,10 +1160,11 @@ export function SsfAirQualityScreen({
               }
               onSelectCoordinate={onSelectCoordinate}
               onNotificationPress={focusNotificationLocation}
-              onModelingPress={() => {
-                /* modeling entry point — placeholder */
-              }}
+              onModelingPress={handleModelingPress}
             />
+            ) : (
+              <View style={styles.mapColPlaceholder} />
+            )}
             {showInsufficientOverlay ? (
               <View style={styles.insufficientWrap} pointerEvents="none">
                 <View style={styles.insufficientCard}>
@@ -1454,15 +1504,28 @@ export function SsfAirQualityScreen({
         }}
         liveAverageAqi={liveAverageAqi}
       />
+      <ModelProjectionMap
+        visible={modelProjectionOpen}
+        onClose={() => {
+          setModelProjectionOpen(false);
+          setModelProjectionPending(false);
+        }}
+        mapKriging={mapKriging}
+        mapSensors={mapSensors}
+        mapRegion={mapRegion}
+        timelineTimesAsc={timelineTimesAsc}
+        viewingLive={viewingLive}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screenRoot: { flex: 1, backgroundColor: '#e8f0fe' },
+  screenRoot: { flex: 1, backgroundColor: '#e8f0fe', overflow: 'hidden' },
   screenContent: { flex: 1, position: 'relative' },
   main: { flex: 1, minHeight: 0 },
   mapCol: { flex: 1, minHeight: 0, zIndex: 0 },
+  mapColPlaceholder: { flex: 1, minHeight: 0, backgroundColor: '#dbeafe' },
   alertSelectionTopDim: {
     position: 'absolute',
     top: 0,

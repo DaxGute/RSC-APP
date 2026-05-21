@@ -82,6 +82,30 @@ export interface Database {
         Update: never;
         Relationships: [];
       };
+      forecast_wind_grid: {
+        Row: {
+          forecast_time_utc: string;
+          lat: number;
+          lon: number;
+          wind_speed_mps: number;
+          wind_direction_deg: number;
+          fetched_at: string;
+        };
+        Insert: {
+          forecast_time_utc: string;
+          lat: number;
+          lon: number;
+          wind_speed_mps: number;
+          wind_direction_deg: number;
+          fetched_at?: string;
+        };
+        Update: Partial<{
+          wind_speed_mps: number;
+          wind_direction_deg: number;
+          fetched_at: string;
+        }>;
+        Relationships: [];
+      };
       user_notification_settings: {
         Row: {
           user_id: string;

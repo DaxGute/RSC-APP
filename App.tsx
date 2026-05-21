@@ -12,6 +12,10 @@ import { InitialLoadSplash } from './components/InitialLoadSplash';
 import { SsfAirQualityScreen } from './components/SsfAirQualityScreen';
 import { useSsfAirQuality } from './hooks/useSsfAirQuality';
 import { ensureAnonymousSession } from './lib/ensureAnonymousSession';
+import {
+  ROOT_TAB_BAR_RESERVED_HEIGHT,
+  ROOT_TAB_BAR_TOP_RADIUS,
+} from './lib/constants/appLayout';
 
 type RootTab = 'map' | 'graph' | 'education';
 
@@ -138,14 +142,15 @@ export default function App() {
 const styles = StyleSheet.create({
   gestureRoot: { flex: 1 },
   appRoot: { flex: 1, position: 'relative' },
-  screenContainer: { flex: 1, paddingBottom: 78 },
+  screenContainer: { flex: 1, paddingBottom: ROOT_TAB_BAR_RESERVED_HEIGHT },
   tabBar: {
     position: 'absolute',
     left: 0,
     right: 0,
     bottom: 0,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    zIndex: 200,
+    borderTopLeftRadius: ROOT_TAB_BAR_TOP_RADIUS,
+    borderTopRightRadius: ROOT_TAB_BAR_TOP_RADIUS,
     paddingTop: 8,
     paddingHorizontal: 10,
     backgroundColor: 'rgba(255,255,255,0.97)',
@@ -154,11 +159,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
+    overflow: 'hidden',
     shadowColor: '#0f172a',
     shadowOpacity: 0.1,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 3 },
-    elevation: 5,
+    elevation: 200,
   },
   tabButton: {
     minWidth: 92,

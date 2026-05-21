@@ -5,18 +5,22 @@ import type { FeatureCollection, MultiPolygon } from 'geojson';
 
 import type { CurrentKrigingRow } from '../lib/database.types';
 import { PM25_AQI_BOUNDS } from '../lib/pm25ColorScale';
-import { recomputeKrigingFromSensors } from '../lib/recomputeKriging';
+import { resolveHeatmapGridRows } from '../lib/resolveHeatmapGrid';
 import type { MapRegion } from '../lib/mapRegionFromData';
 import type { SensorPoint } from '../lib/sensorTypes';
 
 type KrigingHeatmapLayerProps = {
-  kriging: CurrentKrigingRow[];
-  mapRegion: MapRegion;
-  sensors: SensorPoint[];
+  kriging?: CurrentKrigingRow[];
+  mapRegion?: MapRegion;
+  sensors?: SensorPoint[];
+  /** When set with rows, renders this grid directly (no recompute from props). */
+  gridOverride?: CurrentKrigingRow[];
+  /** Scales fill/line opacity for forecast uncertainty (default 1). */
+  opacityScale?: number;
+  /** Prefix for Mapbox source/layer ids when multiple maps are mounted. */
+  layerIdPrefix?: string;
 };
 
-const HEATMAP_GRID_STEPS = 40;
-const EXPECTED_GRID_CELLS = HEATMAP_GRID_STEPS * HEATMAP_GRID_STEPS;
 const BIN_COLORS = ['#00e400', '#ffff00', '#ff7e00', '#ff0000', '#8f3f97', '#7e0023', '#4a001a'];
 const BIN_CONTOUR_THRESHOLDS = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5];
 const BIN_UPPER_BOUNDS = PM25_AQI_BOUNDS.slice(1);
@@ -32,19 +36,20 @@ function pm25BinIndex(pm25: number): number {
   return BIN_UPPER_BOUNDS.length;
 }
 
-export function KrigingHeatmapLayer({ kriging, mapRegion, sensors }: KrigingHeatmapLayerProps) {
+export function KrigingHeatmapLayer({
+  kriging = [],
+  mapRegion: _mapRegion,
+  sensors = [],
+  gridOverride,
+  opacityScale = 1,
+  layerIdPrefix = 'kriging',
+}: KrigingHeatmapLayerProps) {
   const binnedGeoJson = useMemo(
     () => {
-      const time = sensors[0]?.time ?? new Date().toISOString();
-      const recomputed =
-        sensors.length > 0
-          ? recomputeKrigingFromSensors(sensors, time, {
-              latSteps: HEATMAP_GRID_STEPS,
-              lonSteps: HEATMAP_GRID_STEPS,
-            })
-          : [];
       const gridRows =
-        recomputed.length >= EXPECTED_GRID_CELLS ? recomputed.slice(0, EXPECTED_GRID_CELLS) : kriging;
+        gridOverride != null && gridOverride.length > 0
+          ? gridOverride
+          : resolveHeatmapGridRows({ kriging, sensors });
       const validRows = gridRows.filter(
         (r) => Number.isFinite(r.latitude) && Number.isFinite(r.longitude) && Number.isFinite(r.pm25),
       );
@@ -109,10 +114,8 @@ export function KrigingHeatmapLayer({ kriging, mapRegion, sensors }: KrigingHeat
       const shape: FeatureCollection<MultiPolygon, { bin: number; color: string; level: number }> = {
         type: 'FeatureCollection',
         features: [
-          // No base fill for "good" AQI (green): leave the map visible there; contours handle higher bins only.
           ...contourFeatures.map((feature: ContourMultiPolygon, idx: number) => {
             const level = Number(feature.value);
-            // Category contours at 0.5, 1.5, ... represent areas where bin index >= 1, >= 2, ...
             const safeBin = clamp(Math.round(level + 0.5), 1, BIN_COLORS.length - 1);
             const projected = feature.coordinates.map((poly: number[][][]) =>
               poly.map((ring: number[][]) =>
@@ -125,7 +128,7 @@ export function KrigingHeatmapLayer({ kriging, mapRegion, sensors }: KrigingHeat
             );
             return {
               type: 'Feature' as const,
-              id: `kband-${idx}`,
+              id: `${layerIdPrefix}-kband-${idx}`,
               geometry: {
                 type: 'MultiPolygon' as const,
                 coordinates: projected,
@@ -141,27 +144,42 @@ export function KrigingHeatmapLayer({ kriging, mapRegion, sensors }: KrigingHeat
       };
       return shape;
     },
-    [kriging, mapRegion, sensors],
+    [gridOverride, kriging, layerIdPrefix, sensors],
   );
+
+  const fillOpacity = 0.3 * opacityScale;
+  const lineSoftOpacity = 0.2 * opacityScale;
+  const lineOpacity = 0.34 * opacityScale;
 
   if (binnedGeoJson.features.length === 0) return null;
 
+  const sourceId =
+    layerIdPrefix === 'model-projection' ? 'model-projection-source' : `${layerIdPrefix}-heat-source`;
+  const fillId =
+    layerIdPrefix === 'model-projection' ? 'model-projection-fill-layer' : `${layerIdPrefix}-binned-fill-layer`;
+  const lineSoftId =
+    layerIdPrefix === 'model-projection'
+      ? 'model-projection-line-soft-layer'
+      : `${layerIdPrefix}-binned-line-soft-layer`;
+  const lineId =
+    layerIdPrefix === 'model-projection' ? 'model-projection-line-layer' : `${layerIdPrefix}-binned-line-layer`;
+
   return (
-    <Mapbox.ShapeSource id="kriging-heat-source" shape={binnedGeoJson}>
+    <Mapbox.ShapeSource id={sourceId} shape={binnedGeoJson}>
       <Mapbox.FillLayer
-        id="kriging-binned-fill-layer"
+        id={fillId}
         style={{
           fillSortKey: ['get', 'bin'],
           fillColor: ['get', 'color'],
-          fillOpacity: 0.3,
+          fillOpacity,
           fillAntialias: true,
         }}
       />
       <Mapbox.LineLayer
-        id="kriging-binned-line-soft-layer"
+        id={lineSoftId}
         style={{
           lineColor: ['get', 'color'],
-          lineOpacity: 0.2,
+          lineOpacity: lineSoftOpacity,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 1.4, 14, 2.3],
           lineBlur: 1.2,
           lineJoin: 'round',
@@ -169,10 +187,10 @@ export function KrigingHeatmapLayer({ kriging, mapRegion, sensors }: KrigingHeat
         }}
       />
       <Mapbox.LineLayer
-        id="kriging-binned-line-layer"
+        id={lineId}
         style={{
           lineColor: ['get', 'color'],
-          lineOpacity: 0.34,
+          lineOpacity,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 0.35, 14, 0.78],
           lineBlur: 0.25,
           lineJoin: 'round',

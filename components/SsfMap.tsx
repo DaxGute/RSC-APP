@@ -18,8 +18,10 @@ import { SSF_BBOX } from '../lib/constants/ssf';
 import { pm25BreakpointCategory, pm25ToAqi } from '../lib/aqiUtils';
 import type { MapRegion } from '../lib/mapRegionFromData';
 import type { SensorPoint } from '../lib/sensorTypes';
+import { fetchForecastWindGrid, type ForecastWindGridByTime } from '../lib/forecastWindGrid';
 import { KrigingHeatmapLayer } from './KrigingHeatmapLayer';
 import { MapScaleActions } from './MapScaleActions';
+import { WindArrowLayer } from './WindArrowLayer';
 
 export type MapSelectDetail = {
   touchInBottomBand: boolean;
@@ -64,6 +66,7 @@ const MAX_ZOOM_FACTOR = 3;
 const MIN_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MIN_ZOOM_FACTOR;
 const MAX_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MAX_ZOOM_FACTOR;
 const ZOOM_STEP = 1;
+const WIND_GRID_REFRESH_MS = 10 * 60 * 1000;
 const REMINDER_BELL_PATH =
   'M42.2174 32.922V21.7756C42.2174 20.4935 42.0235 19.2188 41.6423 17.9946C37.9321 6.07937 21.0679 6.07937 17.3577 17.9946C16.9765 19.2188 16.7826 20.4935 16.7826 21.7756V32.922C16.7826 34.01 16.3743 35.0585 15.6383 35.8599L11.5394 40.3236C10.9506 40.9648 11.4054 42 12.2759 42H46.7241C47.5946 42 48.0494 40.9648 47.4606 40.3236L43.3617 35.8599C42.6257 35.0585 42.2174 34.01 42.2174 32.922Z';
 
@@ -114,6 +117,20 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
   const prevSelectedCoordKeyRef = useRef<string | null>(
     selected ? `${selected.latitude.toFixed(6)}:${selected.longitude.toFixed(6)}` : null,
   );
+  const [windGrid, setWindGrid] = useState<ForecastWindGridByTime | null>(null);
+
+  const loadWindGrid = useCallback(async () => {
+    const grid = await fetchForecastWindGrid();
+    setWindGrid(grid);
+  }, []);
+
+  useEffect(() => {
+    void loadWindGrid();
+    const id = setInterval(() => {
+      void loadWindGrid();
+    }, WIND_GRID_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [loadWindGrid]);
 
   const sensorGeoJson = useMemo(() => {
     const shape: FeatureCollection<
@@ -396,6 +413,11 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
         />
 
         <KrigingHeatmapLayer kriging={kriging} mapRegion={mapRegion} sensors={sensors} />
+
+        <WindArrowLayer
+          points={windGrid?.displayPoints ?? []}
+          visible={windGrid?.available ?? false}
+        />
 
         <Mapbox.ShapeSource id="sensors" shape={sensorGeoJson} onPress={handleSensorPress}>
           <Mapbox.CircleLayer
