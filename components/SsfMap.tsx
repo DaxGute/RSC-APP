@@ -17,6 +17,14 @@ import type { CurrentKrigingRow } from '../lib/database.types';
 import { SSF_BBOX } from '../lib/constants/ssf';
 import { pm25BreakpointCategory, pm25ToAqi } from '../lib/aqiUtils';
 import type { MapRegion } from '../lib/mapRegionFromData';
+import {
+  findSensorNear,
+  isValidSensorIndex,
+  parseSensorIndex,
+  SENSOR_FEATURE_HIT_KM,
+  SENSOR_MAP_HIT_KM,
+  sensorDetailFromPoint,
+} from '../lib/sensorIndex';
 import type { SensorPoint } from '../lib/sensorTypes';
 import { KrigingHeatmapLayer } from './KrigingHeatmapLayer';
 import { MapScaleActions } from './MapScaleActions';
@@ -25,7 +33,7 @@ export type MapSelectDetail = {
   touchInBottomBand: boolean;
   screenPointX?: number | null;
   screenPointY?: number | null;
-  sensorIndex?: number;
+  sensorIndex?: number | string;
   sensorSource?: string;
   sensorName?: string | null;
 };
@@ -64,6 +72,8 @@ const MAX_ZOOM_FACTOR = 3;
 const MIN_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MIN_ZOOM_FACTOR;
 const MAX_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MAX_ZOOM_FACTOR;
 const ZOOM_STEP = 1;
+const PANEL_TOUCH_LOCK_MS = 300;
+const CALLOUT_CARD_WIDTH = 300;
 const REMINDER_BELL_PATH =
   'M42.2174 32.922V21.7756C42.2174 20.4935 42.0235 19.2188 41.6423 17.9946C37.9321 6.07937 21.0679 6.07937 17.3577 17.9946C16.9765 19.2188 16.7826 20.4935 16.7826 21.7756V32.922C16.7826 34.01 16.3743 35.0585 15.6383 35.8599L11.5394 40.3236C10.9506 40.9648 11.4054 42 12.2759 42H46.7241C47.5946 42 48.0494 40.9648 47.4606 40.3236L43.3617 35.8599C42.6257 35.0585 42.2174 34.01 42.2174 32.922Z';
 
@@ -104,6 +114,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
   const [mapLayoutReady, setMapLayoutReady] = useState(false);
   const cameraRef = useRef<Mapbox.Camera>(null);
   const lastSensorTapMsRef = useRef(0);
+  const lastPanelTouchMsRef = useRef(0);
   const [zoomLevel, setZoomLevel] = useState(DEFAULT_ZOOM_LEVEL);
   const calloutScale = useRef(new Animated.Value(0.92)).current;
   const calloutOpacity = useRef(new Animated.Value(0)).current;
@@ -114,13 +125,17 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
   const prevSelectedCoordKeyRef = useRef<string | null>(
     selected ? `${selected.latitude.toFixed(6)}:${selected.longitude.toFixed(6)}` : null,
   );
+  const mapSensors = useMemo(
+    () => sensors.filter((s) => isValidSensorIndex(s.sensorIndex)),
+    [sensors],
+  );
   const sensorGeoJson = useMemo(() => {
     const shape: FeatureCollection<
       Point,
-      { sensor_index: number; source: string; name: string | null; pm25: number; aqi: number; color: string }
+      { sensor_index: number | string; source: string; name: string | null; pm25: number; aqi: number; color: string }
     > = {
       type: 'FeatureCollection',
-      features: sensors.map((s) => ({
+      features: mapSensors.map((s) => ({
         type: 'Feature' as const,
         id: `s-${s.source}-${s.sensorIndex}`,
         geometry: {
@@ -138,7 +153,31 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
       })),
     };
     return shape;
-  }, [sensors]);
+  }, [mapSensors]);
+
+  const resolveSensorAt = useCallback(
+    (
+      lat: number,
+      lon: number,
+      featureProps?: { sensor_index?: unknown; source?: unknown; name?: unknown },
+      maxKm = SENSOR_FEATURE_HIT_KM,
+    ) => {
+      const parsedIndex = featureProps ? parseSensorIndex(featureProps.sensor_index) : null;
+      if (parsedIndex != null) {
+        const source =
+          typeof featureProps?.source === 'string' ? featureProps.source : undefined;
+        const byIndex =
+          mapSensors.find(
+            (s) =>
+              s.sensorIndex === parsedIndex && (source == null || s.source === source),
+          ) ?? mapSensors.find((s) => s.sensorIndex === parsedIndex);
+        if (byIndex) return sensorDetailFromPoint(byIndex);
+      }
+      const near = findSensorNear(lat, lon, mapSensors, maxKm);
+      return near ? sensorDetailFromPoint(near) : undefined;
+    },
+    [mapSensors],
+  );
 
   const selectedGeoJson = useMemo(() => {
     if (!selected) return null;
@@ -164,7 +203,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
       lon: number,
       pageX: number | null,
       pageY: number | null,
-      sensorDetail?: { sensorIndex?: number; sensorSource?: string; sensorName?: string | null },
+      sensorDetail?: { sensorIndex?: number | string; sensorSource?: string; sensorName?: string | null },
     ) => {
       const finish = (touchInBottomBand: boolean) => {
         onSelectCoordinate(lat, lon, {
@@ -190,6 +229,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
 
   const handleMapPress = useCallback(
     (event: any) => {
+      if (Date.now() - lastPanelTouchMsRef.current < PANEL_TOUCH_LOCK_MS) return;
       // Prevent the immediate map click after a sensor click from overriding sensor selection.
       if (Date.now() - lastSensorTapMsRef.current < 250) return;
       const coords = event?.geometry?.coordinates;
@@ -197,47 +237,49 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
       const [lon, lat] = coords;
       const maybePageX = (event?.properties as { screenPointX?: number } | undefined)?.screenPointX ?? null;
       const maybePageY = (event?.properties as { screenPointY?: number } | undefined)?.screenPointY ?? null;
-      handlePress(lat, lon, maybePageX, maybePageY);
+      const sensorDetail = resolveSensorAt(lat, lon, undefined, SENSOR_MAP_HIT_KM);
+      if (sensorDetail) lastSensorTapMsRef.current = Date.now();
+      handlePress(lat, lon, maybePageX, maybePageY, sensorDetail);
     },
-    [handlePress],
+    [handlePress, resolveSensorAt],
   );
 
   const handleSensorPress = useCallback(
     (event: any) => {
+      if (Date.now() - lastPanelTouchMsRef.current < PANEL_TOUCH_LOCK_MS) return;
       const feature = event.features?.[0];
       const coords = feature?.geometry?.type === 'Point' ? feature.geometry.coordinates : null;
       if (!coords || coords.length < 2) return;
       const [lon, lat] = coords;
-      const rawSensorIndex = feature?.properties?.sensor_index;
-      const sensorIndex =
-        typeof rawSensorIndex === 'number'
-          ? rawSensorIndex
-          : typeof rawSensorIndex === 'string'
-            ? Number.parseInt(rawSensorIndex, 10)
-            : undefined;
-      const sensorSource =
-        typeof feature?.properties?.source === 'string' ? feature.properties.source : undefined;
-      const sensorName =
-        typeof feature?.properties?.name === 'string' ? feature.properties.name : null;
+      const sensorDetail = resolveSensorAt(lat, lon, feature?.properties, SENSOR_FEATURE_HIT_KM);
+      if (!sensorDetail) return;
       const pressPoint = (event as { point?: { x?: number; y?: number } }).point;
       const maybePageX =
         typeof pressPoint?.x === 'number' && Number.isFinite(pressPoint.x) ? pressPoint.x : null;
       const maybePageY =
         typeof pressPoint?.y === 'number' && Number.isFinite(pressPoint.y) ? pressPoint.y : null;
       lastSensorTapMsRef.current = Date.now();
-      handlePress(lat, lon, maybePageX, maybePageY, {
-        sensorIndex: Number.isFinite(sensorIndex) ? sensorIndex : undefined,
-        sensorSource,
-        sensorName,
-      });
+      handlePress(lat, lon, maybePageX, maybePageY, sensorDetail);
     },
-    [handlePress],
+    [handlePress, resolveSensorAt],
   );
 
   const handleReminderPress = useCallback(() => {
+    if (Date.now() - lastPanelTouchMsRef.current < PANEL_TOUCH_LOCK_MS) return;
     if (!reminderLocation) return;
     handlePress(reminderLocation.latitude, reminderLocation.longitude, null, null);
   }, [handlePress, reminderLocation]);
+
+  const markPanelTouch = useCallback(() => {
+    lastPanelTouchMsRef.current = Date.now();
+  }, []);
+
+  const selectedCalloutAnchorX = useMemo(() => {
+    // Keep the visual callout and hitbox aligned near screen edges by shifting
+    // marker anchor instead of using card transform.
+    const anchorX = 0.5 - animatedShiftX / CALLOUT_CARD_WIDTH;
+    return Math.min(1, Math.max(0, anchorX));
+  }, [animatedShiftX]);
 
   useImperativeHandle(
     ref,
@@ -397,7 +439,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
 
         <KrigingHeatmapLayer kriging={kriging} mapRegion={mapRegion} sensors={sensors} />
 
-        <Mapbox.ShapeSource id="sensors" shape={sensorGeoJson} onPress={handleSensorPress}>
+        <Mapbox.ShapeSource id="sensors" shape={sensorGeoJson} onPress={handleSensorPress} hitbox={{ width: 28, height: 28 }}>
           <Mapbox.CircleLayer
             id="sensor-points"
             style={{
@@ -426,7 +468,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
           <Mapbox.MarkerView
             id="selected-callout"
             coordinate={[animatedSelected.longitude, animatedSelected.latitude]}
-            anchor={{ x: 0.5, y: animatedPlacement === 'above' ? 1 : 0 }}
+            anchor={{ x: selectedCalloutAnchorX, y: animatedPlacement === 'above' ? 1 : 0 }}
           >
             <Animated.View
               style={[
@@ -437,10 +479,18 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
                   transform: [{ scale: calloutScale }],
                 },
               ]}
-              pointerEvents="box-none"
+              pointerEvents="auto"
+              onStartShouldSetResponderCapture={() => {
+                markPanelTouch();
+                return false;
+              }}
+              onMoveShouldSetResponderCapture={() => {
+                markPanelTouch();
+                return false;
+              }}
             >
               {animatedPlacement === 'below' ? <View style={styles.calloutArrowUp} /> : null}
-              <View style={[styles.calloutCard, { transform: [{ translateX: animatedShiftX }] }]}>
+              <View style={styles.calloutCard}>
                 {animatedCallout}
               </View>
               {animatedPlacement === 'above' ? <View style={styles.calloutArrowDown} /> : null}
@@ -493,7 +543,7 @@ const styles = StyleSheet.create({
     marginTop: 18,
   },
   calloutCard: {
-    width: 300,
+    width: CALLOUT_CARD_WIDTH,
     borderRadius: 14,
     overflow: 'hidden',
   },

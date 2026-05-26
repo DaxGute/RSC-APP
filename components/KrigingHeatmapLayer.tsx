@@ -4,7 +4,8 @@ import { contours, type ContourMultiPolygon } from 'd3-contour';
 import type { FeatureCollection, MultiPolygon } from 'geojson';
 
 import type { CurrentKrigingRow } from '../lib/database.types';
-import { PM25_AQI_BOUNDS } from '../lib/pm25ColorScale';
+import { pm25BreakpointCategory } from '../lib/aqiUtils';
+import { PM25_CONTOUR_THRESHOLDS as pm25ContourThresholds } from '../lib/airQualityBreakpoints';
 import { resolveHeatmapGridRows } from '../lib/resolveHeatmapGrid';
 import type { MapRegion } from '../lib/mapRegionFromData';
 import type { SensorPoint } from '../lib/sensorTypes';
@@ -21,19 +22,11 @@ type KrigingHeatmapLayerProps = {
   layerIdPrefix?: string;
 };
 
-const BIN_COLORS = ['#00e400', '#ffff00', '#ff7e00', '#ff0000', '#8f3f97', '#7e0023', '#4a001a'];
-const BIN_CONTOUR_THRESHOLDS = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5];
-const BIN_UPPER_BOUNDS = PM25_AQI_BOUNDS.slice(1);
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function pm25BinIndex(pm25: number): number {
-  for (let i = 0; i < BIN_UPPER_BOUNDS.length; i++) {
-    if (pm25 <= BIN_UPPER_BOUNDS[i]) return i;
+function sortKeyForThreshold(level: number): number {
+  for (let i = pm25ContourThresholds.length - 1; i >= 0; i -= 1) {
+    if (level >= pm25ContourThresholds[i]) return i + 2;
   }
-  return BIN_UPPER_BOUNDS.length;
+  return 1;
 }
 
 export function KrigingHeatmapLayer({
@@ -57,7 +50,7 @@ export function KrigingHeatmapLayer({
         return {
           type: 'FeatureCollection',
           features: [],
-        } as FeatureCollection<MultiPolygon, { bin: number; color: string; level: number }>;
+        } as FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }>;
       }
 
       const byLat = new Map<number, Map<number, number>>();
@@ -75,14 +68,14 @@ export function KrigingHeatmapLayer({
         return {
           type: 'FeatureCollection',
           features: [],
-        } as FeatureCollection<MultiPolygon, { bin: number; color: string; level: number }>;
+        } as FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }>;
       }
       const lonAsc = Array.from(byLat.get(latAsc[0])?.keys() ?? []).sort((a, b) => a - b);
       if (lonAsc.length < 2) {
         return {
           type: 'FeatureCollection',
           features: [],
-        } as FeatureCollection<MultiPolygon, { bin: number; color: string; level: number }>;
+        } as FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }>;
       }
 
       const n = lonAsc.length;
@@ -95,7 +88,7 @@ export function KrigingHeatmapLayer({
         return {
           type: 'FeatureCollection',
           features: [],
-        } as FeatureCollection<MultiPolygon, { bin: number; color: string; level: number }>;
+        } as FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }>;
       }
 
       const values: number[] = [];
@@ -105,18 +98,19 @@ export function KrigingHeatmapLayer({
         for (let x = 0; x < n; x++) {
           const lon = lonAsc[x];
           const pm = lonMap?.get(lon);
-          values.push(pm == null ? 0 : pm25BinIndex(pm));
+          values.push(pm == null ? 0 : pm);
         }
       }
 
-      const contourGen = contours().size([n, m]).thresholds(BIN_CONTOUR_THRESHOLDS);
+      const contourGen = contours().size([n, m]).thresholds(pm25ContourThresholds);
       const contourFeatures = contourGen(values);
-      const shape: FeatureCollection<MultiPolygon, { bin: number; color: string; level: number }> = {
+      const shape: FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }> = {
         type: 'FeatureCollection',
         features: [
           ...contourFeatures.map((feature: ContourMultiPolygon, idx: number) => {
             const level = Number(feature.value);
-            const safeBin = clamp(Math.round(level + 0.5), 1, BIN_COLORS.length - 1);
+            const color = pm25BreakpointCategory(level).bg.toLowerCase();
+            const sortKey = sortKeyForThreshold(level);
             const projected = feature.coordinates.map((poly: number[][][]) =>
               poly.map((ring: number[][]) =>
                 ring.map(([x, y]: number[]) => {
@@ -134,8 +128,8 @@ export function KrigingHeatmapLayer({
                 coordinates: projected,
               },
               properties: {
-                bin: safeBin,
-                color: BIN_COLORS[safeBin],
+                sortKey,
+                color,
                 level,
               },
             };
@@ -169,7 +163,7 @@ export function KrigingHeatmapLayer({
       <Mapbox.FillLayer
         id={fillId}
         style={{
-          fillSortKey: ['get', 'bin'],
+          fillSortKey: ['get', 'sortKey'],
           fillColor: ['get', 'color'],
           fillOpacity,
           fillAntialias: true,

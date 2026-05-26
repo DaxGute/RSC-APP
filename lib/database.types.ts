@@ -4,7 +4,7 @@
  */
 
 export interface PurpleAirRow {
-  sensor_index: number;
+  sensor_index: number | string;
   name: string | null;
   latitude: number;
   longitude: number;
@@ -19,7 +19,7 @@ export interface PurpleAirRow {
 }
 
 export interface ClarityRow {
-  sensor_index: number;
+  sensor_index: number | string;
   name: string | null;
   latitude: number;
   longitude: number;
@@ -44,7 +44,7 @@ export interface CurrentKrigingRow {
 
 export interface DailySensorAqiRow {
   source: string;
-  sensor_index: number;
+  sensor_index: number | string;
   name: string | null;
   latitude: number;
   longitude: number;

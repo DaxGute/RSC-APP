@@ -1,4 +1,5 @@
 import type { ClarityRow, PurpleAirRow } from './database.types';
+import { AQI_CATEGORY_BANDS, AQI_CATEGORY_UPPER_BOUNDS } from './airQualityBreakpoints';
 import { pm25ToAqi } from './aqiUtils';
 
 export const TEN_MIN_MS = 10 * 60 * 1000;
@@ -308,20 +309,35 @@ export function buildDayTimelineChart(
 }
 
 export function dayAqiCategory(aqi: number): DayAqiCategory {
-  if (aqi <= 50) return 'good';
-  if (aqi <= 100) return 'moderate';
-  if (aqi <= 150) return 'usg';
+  if (aqi <= (AQI_CATEGORY_UPPER_BOUNDS[0] ?? 50)) return 'good';
+  if (aqi <= (AQI_CATEGORY_UPPER_BOUNDS[1] ?? 100)) return 'moderate';
+  if (aqi <= (AQI_CATEGORY_UPPER_BOUNDS[2] ?? 150)) return 'usg';
   return 'unhealthy';
+}
+
+function dayMetaFromBand(index: number) {
+  const band = AQI_CATEGORY_BANDS[index];
+  return {
+    label: band?.label ?? '',
+    shortLabel: index === 2 ? 'USG' : (band?.label.split(' ')[0] ?? ''),
+    bg: band?.bg ?? '#94a3b8',
+    fg: band?.fg ?? '#111827',
+  };
 }
 
 export const DAY_AQI_CATEGORY_META: Record<
   DayAqiCategory,
   { label: string; shortLabel: string; bg: string; fg: string }
 > = {
-  good: { label: 'Good', shortLabel: 'Good', bg: '#00E400', fg: '#111827' },
-  moderate: { label: 'Moderate', shortLabel: 'Moderate', bg: '#FFFF00', fg: '#111827' },
-  usg: { label: 'USG', shortLabel: 'USG', bg: '#FF7E00', fg: '#111827' },
-  unhealthy: { label: 'Unhealthy+', shortLabel: 'Unhealthy+', bg: '#FF0000', fg: '#FFFFFF' },
+  good: { ...dayMetaFromBand(0), shortLabel: 'Good' },
+  moderate: { ...dayMetaFromBand(1), shortLabel: 'Moderate' },
+  usg: { ...dayMetaFromBand(2), shortLabel: 'USG' },
+  unhealthy: {
+    label: 'Unhealthy+',
+    shortLabel: 'Unhealthy+',
+    bg: AQI_CATEGORY_BANDS[3]?.bg ?? '#FF0000',
+    fg: AQI_CATEGORY_BANDS[3]?.fg ?? '#FFFFFF',
+  },
 };
 
 export type DayCategoryCounts = Record<DayAqiCategory, number>;

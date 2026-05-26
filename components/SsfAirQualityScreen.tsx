@@ -330,7 +330,7 @@ export function SsfAirQualityScreen({
     label: string | null;
     screenPointX: number | null;
     screenPointY: number | null;
-    sensorIndex?: number;
+    sensorIndex?: number | string;
     sensorSource?: string;
   } | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
@@ -352,6 +352,7 @@ export function SsfAirQualityScreen({
   const [pendingNoDataBucketTime, setPendingNoDataBucketTime] = useState<string | null>(null);
   const dayLoadGenRef = useRef(0);
   const mapRef = useRef<SsfMapHandle>(null);
+  const lastPanelTouchMsRef = useRef(0);
   const [openReminderModalSignal, setOpenReminderModalSignal] = useState(0);
   const [modelProjectionOpen, setModelProjectionOpen] = useState(false);
   const [modelProjectionPending, setModelProjectionPending] = useState(false);
@@ -461,7 +462,7 @@ export function SsfAirQualityScreen({
         touchInBottomBand: boolean;
         screenPointX?: number | null;
         screenPointY?: number | null;
-        sensorIndex?: number;
+        sensorIndex?: number | string;
         sensorSource?: string;
         sensorName?: string | null;
       },
@@ -469,23 +470,29 @@ export function SsfAirQualityScreen({
       if (timeFilterMenuOpenRef.current) {
         closeTimeFilterMenuRef.current();
       }
-      const matchedSensor =
-        detail.sensorIndex != null
-          ? sensors.find(
-              (s) =>
-                s.sensorIndex === detail.sensorIndex &&
-                (detail.sensorSource == null || s.source === detail.sensorSource),
-            ) ?? sensors.find((s) => s.sensorIndex === detail.sensorIndex)
-          : undefined;
-      const sensorName = detail.sensorName ?? matchedSensor?.name ?? null;
+      const isSensorTap = detail.sensorIndex != null;
+      const matchedSensor = isSensorTap
+        ? sensors.find(
+            (s) =>
+              s.sensorIndex === detail.sensorIndex &&
+              (detail.sensorSource == null || s.source === detail.sensorSource),
+          ) ?? sensors.find((s) => s.sensorIndex === detail.sensorIndex)
+        : undefined;
+      const sensorName = isSensorTap
+        ? detail.sensorName ?? matchedSensor?.name ?? null
+        : null;
       setSelected({
         lat,
         lon,
         label: sensorName,
         screenPointX: detail.screenPointX ?? null,
         screenPointY: detail.screenPointY ?? null,
-        sensorIndex: matchedSensor?.sensorIndex,
-        sensorSource: matchedSensor?.source,
+        ...(isSensorTap
+          ? {
+              sensorIndex: matchedSensor?.sensorIndex ?? detail.sensorIndex,
+              sensorSource: matchedSensor?.source ?? detail.sensorSource,
+            }
+          : {}),
       });
     },
     [sensors],
@@ -499,11 +506,12 @@ export function SsfAirQualityScreen({
         touchInBottomBand: boolean;
         screenPointX?: number | null;
         screenPointY?: number | null;
-        sensorIndex?: number;
+        sensorIndex?: number | string;
         sensorSource?: string;
         sensorName?: string | null;
       },
     ) => {
+      if (Date.now() - lastPanelTouchMsRef.current < 300) return;
       if (isSelectingAlertLocationRef.current) {
         applyMapSelection(lat, lon, detail);
         setIsSelectingAlertLocation(false);
@@ -515,6 +523,10 @@ export function SsfAirQualityScreen({
     },
     [applyMapSelection],
   );
+
+  const markPanelTouch = useCallback(() => {
+    lastPanelTouchMsRef.current = Date.now();
+  }, []);
 
   const clearSelection = useCallback(() => {
     setSelected(null);
@@ -1114,12 +1126,11 @@ export function SsfAirQualityScreen({
                     loading={loading}
                     error={error}
                     sensors={sensors}
-                    kriging={kriging}
+                    kriging={mapKriging}
                     mapRegion={mapRegion}
                     onClose={clearSelection}
                     sheetMode
                     sheetDocked
-                    healthTooltipPlacement="above"
                     reminderBellActive={isReminderForCoordinate(selected)}
                     onReminderPickThreshold={async (categoryIndex, cooldownMinutes) => {
                       if (selected == null) return;
@@ -1152,6 +1163,7 @@ export function SsfAirQualityScreen({
                     savedReminderCategoryIndex={reminder?.categoryIndex ?? null}
                     savedReminderCooldownMinutes={reminder?.cooldownMinutes ?? null}
                     openReminderModalSignal={openReminderModalSignal}
+                    onPanelTouchStart={markPanelTouch}
                   />
                 ) : null
               }

@@ -12,12 +12,14 @@ import {
   type FetchError,
 } from '../lib/fetchAirQuality';
 import { recomputeKrigingFromSensors } from '../lib/recomputeKriging';
+import { HEATMAP_GRID_STEPS } from '../lib/resolveHeatmapGrid';
+import { normalizeSensorIndex } from '../lib/sensorIndex';
 import type { SensorPoint } from '../lib/sensorTypes';
 
 export type { SensorPoint, SensorSource } from '../lib/sensorTypes';
 
 const TIMELINE_HOURS_BACK = 24;
-const HISTORICAL_KRIGING_GRID_STEPS = 20;
+const HISTORICAL_KRIGING_GRID_STEPS = HEATMAP_GRID_STEPS;
 const HISTORICAL_KRIGING_NEIGHBORS = 4;
 
 function rollingRecordedTimeBounds(): { fromIso: string; toIso: string } {
@@ -56,9 +58,17 @@ function toSensorPoints(
 ): SensorPoint[] {
   const out: SensorPoint[] = [];
   for (const r of purple ?? []) {
-    if (r.pm25 == null || !Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) continue;
+    const sensorIndex = normalizeSensorIndex(r.sensor_index);
+    if (
+      r.pm25 == null ||
+      !Number.isFinite(r.latitude) ||
+      !Number.isFinite(r.longitude) ||
+      sensorIndex == null
+    ) {
+      continue;
+    }
     out.push({
-      sensorIndex: r.sensor_index,
+      sensorIndex,
       name: r.name ?? null,
       latitude: r.latitude,
       longitude: r.longitude,
@@ -68,9 +78,17 @@ function toSensorPoints(
     });
   }
   for (const r of clarity ?? []) {
-    if (r.pm25 == null || !Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) continue;
+    const sensorIndex = normalizeSensorIndex(r.sensor_index);
+    if (
+      r.pm25 == null ||
+      !Number.isFinite(r.latitude) ||
+      !Number.isFinite(r.longitude) ||
+      sensorIndex == null
+    ) {
+      continue;
+    }
     out.push({
-      sensorIndex: r.sensor_index,
+      sensorIndex,
       name: r.name ?? null,
       latitude: r.latitude,
       longitude: r.longitude,
@@ -85,9 +103,17 @@ function toSensorPoints(
 function toDailySensorPoints(rows: DailySensorAqiRow[] | null): SensorPoint[] {
   const out: SensorPoint[] = [];
   for (const r of rows ?? []) {
-    if (r.pm25 == null || !Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) continue;
+    const sensorIndex = normalizeSensorIndex(r.sensor_index);
+    if (
+      r.pm25 == null ||
+      !Number.isFinite(r.latitude) ||
+      !Number.isFinite(r.longitude) ||
+      sensorIndex == null
+    ) {
+      continue;
+    }
     out.push({
-      sensorIndex: r.sensor_index,
+      sensorIndex,
       name: r.name ?? null,
       latitude: r.latitude,
       longitude: r.longitude,
@@ -430,23 +456,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     if (sensors.length === 0) return null;
     const avgPm = sensors.reduce((acc, s) => acc + s.pm25, 0) / sensors.length;
     if (!Number.isFinite(avgPm)) return null;
-    const c = Math.floor(avgPm * 10) / 10;
-    const bps: [number, number, number, number][] = [
-      [0.0, 12.0, 0, 50],
-      [12.1, 35.4, 51, 100],
-      [35.5, 55.4, 101, 150],
-      [55.5, 150.4, 151, 200],
-      [150.5, 250.4, 201, 300],
-      [250.5, 350.4, 301, 400],
-      [350.5, 500.4, 401, 500],
-    ];
-    for (const [cLo, cHi, iLo, iHi] of bps) {
-      if (c >= cLo && c <= cHi) {
-        return Math.round(((iHi - iLo) / (cHi - cLo)) * (c - cLo) + iLo);
-      }
-    }
-    if (c > 500.4) return 500;
-    return null;
+    return pm25ToAqi(avgPm);
   }, [sensors]);
   const averageAqiTimeseries = useMemo(
     () => buildAverageAqiTimeseries(purpleAir, clarity),

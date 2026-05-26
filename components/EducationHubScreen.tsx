@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -7,9 +8,21 @@ import {
   View,
   type LayoutChangeEvent,
 } from 'react-native';
-import { ResizeMode, Video } from 'expo-av';
-import type { AVPlaybackSource } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { WebView } from 'react-native-webview';
+import type { AppLanguage } from '../lib/appLanguage';
+import {
+  educationCopy,
+  youtubeThumbnailUri,
+  type EducationAqiLevel,
+  type EducationAqiLevelId,
+  type EducationVideoItem,
+} from '../lib/educationContent';
+import { educationTheme } from '../lib/educationTheme';
+import { buildYouTubeEmbedHtml, YOUTUBE_EMBED_ORIGIN } from '../lib/youtubeEmbed';
+import { AqiHealthExplorer } from './AqiHealthExplorer';
+import { LanguageToggle } from './LanguageToggle';
 import Animated, {
   Extrapolation,
   interpolate,
@@ -21,135 +34,97 @@ import Animated, {
 const EXPAND_DURATION_MS = 280;
 const COLLAPSED_BAR_HEIGHT = 48;
 
-type AqiLevel = {
-  label: string;
-  range: string;
-  leftColor: string;
-  barFg: string;
-  advice: string[];
-  actions: string[];
-};
+function YouTubeEmbed({ videoId }: { videoId: string }) {
+  return (
+    <WebView
+      source={{
+        html: buildYouTubeEmbedHtml(videoId),
+        baseUrl: YOUTUBE_EMBED_ORIGIN,
+      }}
+      style={styles.videoPlayer}
+      allowsFullscreenVideo
+      allowsInlineMediaPlayback
+      mediaPlaybackRequiresUserAction={false}
+      javaScriptEnabled
+      domStorageEnabled
+      originWhitelist={['*']}
+    />
+  );
+}
 
-const sensitiveGroups = [
-  'People with asthma, COPD, respiratory or other breathing conditions',
-  'People with heart disease or those over 65 years old',
-  'Children and teens, because lungs are still developing',
-  'Pregnant people',
-  'People who work or exercise heavily outdoors',
-];
-
-const levels: AqiLevel[] = [
-  {
-    label: 'Good',
-    range: 'AQI 0-50',
-    leftColor: '#00e400',
-    barFg: '#0f172a',
-    advice: [
-      'Air quality is satisfactory and health risk is minimal.',
-      'No special precautions are needed for most people.',
-      'Ideal conditions for outdoor activities and exercise.',
-    ],
-    actions: ['Enjoy outdoor activities', 'Keep windows open', 'Use bike/walk routes'],
-  },
-  {
-    label: 'Moderate',
-    range: 'AQI 51-100',
-    leftColor: '#ffdb00',
-    barFg: '#0f172a',
-    advice: [
-      'Air quality is acceptable for most people.',
-      'Very sensitive people may notice minor irritation with prolonged exposure.',
-      'Most people can continue normal outdoor activity.',
-    ],
-    actions: ['Take breaks if sensitive', 'Watch for symptoms', 'Limit heavy exertion if needed'],
-  },
-  {
-    label: 'Unhealthy for Sensitive Groups',
-    range: 'AQI 101-150',
-    leftColor: '#ff7e00',
-    barFg: '#0f172a',
-    advice: [
-      'Sensitive groups are at greater risk from prolonged exposure.',
-      'People with asthma/COPD or heart disease may respond to symptoms sooner.',
-      'Older adults and children should reduce prolonged outdoor exertion.',
-    ],
-    actions: ['Reduce prolonged exertion', 'Carry inhalers', 'Choose lower-traffic routes'],
-  },
-  {
-    label: 'Unhealthy',
-    range: 'AQI 151-200',
-    leftColor: '#ff0000',
-    barFg: '#ffffff',
-    advice: [
-      'Everyone can begin to experience health effects.',
-      'Sensitive groups may feel effects earlier and more intensely.',
-      'Extended outdoor activity may worsen breathing and cardiovascular symptoms.',
-    ],
-    actions: ['Limit time outdoors', 'Use well-fitted masks', 'Run indoor air filtration'],
-  },
-  {
-    label: 'Very Unhealthy',
-    range: 'AQI 201-300',
-    leftColor: '#8f3f97',
-    barFg: '#ffffff',
-    advice: [
-      'Health alert: risk is high for the entire population.',
-      'Avoid prolonged or heavy outdoor activity.',
-      'Children, older adults, and people with medical conditions should stay indoors.',
-    ],
-    actions: ['Stay indoors', 'Seal windows', 'Use HEPA filters'],
-  },
-  {
-    label: 'Hazardous',
-    range: 'AQI 301+',
-    leftColor: '#7e0023',
-    barFg: '#ffffff',
-    advice: [
-      'Emergency conditions. Serious health impacts are likely.',
-      'Avoid all outdoor exertion and remain indoors when possible.',
-      'Follow local public health guidance and emergency alerts.',
-    ],
-    actions: ['Avoid outdoor exposure', 'Use clean air shelters', 'Follow emergency guidance'],
-  },
-];
-
-type EducationVideo = {
+type EducationSectionProps = {
+  stepLabel: string;
   title: string;
-  source: AVPlaybackSource;
+  subtitle?: string;
+  children: ReactNode;
 };
 
-const educationVideos: EducationVideo[] = [
-  {
-    title: 'AQI Basics Explained',
-    source: require('../assets/videos/IMG_6354.mp4'),
-  },
-  {
-    title: 'How Air Pollution Affects Health',
-    source: require('../assets/videos/IMG_6356.mp4'),
-  },
-  {
-    title: 'What Is PM2.5?',
-    source: require('../assets/videos/IMG_6358.mp4'),
-  },
-  {
-    title: 'Simple Steps To Protect Yourself',
-    source: require('../assets/videos/IMG_6359.mp4'),
-  },
-];
+function EducationSection({ stepLabel, title, subtitle, children }: EducationSectionProps) {
+  return (
+    <View style={styles.sectionCard}>
+      <Text style={styles.sectionStepLabel}>{stepLabel}</Text>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {subtitle ? <Text style={styles.sectionSubtitle}>{subtitle}</Text> : null}
+      <View style={styles.sectionBody}>{children}</View>
+    </View>
+  );
+}
 
-function toPlaybackSource(source: AVPlaybackSource): AVPlaybackSource {
-  if (typeof source === 'string') {
-    return { uri: source };
-  }
-  return source;
+type VideoLearningCardProps = {
+  video: EducationVideoItem;
+  expanded: boolean;
+  tapHint: string;
+  playingHint: string;
+  onPress: () => void;
+};
+
+function VideoLearningCard({ video, expanded, tapHint, playingHint, onPress }: VideoLearningCardProps) {
+  return (
+    <View style={[styles.videoCard, expanded && styles.videoCardExpanded]}>
+      <Pressable
+        onPress={onPress}
+        style={styles.videoCardPressable}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        accessibilityLabel={`${video.title}. ${expanded ? playingHint : tapHint}`}
+      >
+        <View style={styles.videoCardRow}>
+          <Image source={{ uri: youtubeThumbnailUri(video.videoId) }} style={styles.videoThumbnail} />
+          <View style={styles.videoCardText}>
+            <Text style={styles.videoTitle} numberOfLines={2}>
+              {video.title}
+            </Text>
+            <Text style={styles.videoHint}>{expanded ? playingHint : tapHint}</Text>
+          </View>
+          <Ionicons
+            name={expanded ? 'chevron-up-circle' : 'play-circle'}
+            size={28}
+            color={expanded ? educationTheme.mutedColor : educationTheme.accentColor}
+          />
+        </View>
+      </Pressable>
+      {expanded ? (
+        <View style={styles.videoFrame}>
+          <YouTubeEmbed videoId={video.videoId} />
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
 type AqiLevelBodyProps = {
-  level: AqiLevel;
+  level: EducationAqiLevel;
   showSensitiveGroups: boolean;
+  sensitiveGroupsTitle: string;
+  sensitiveGroups: string[];
 };
 
-function AqiLevelBody({ level, showSensitiveGroups }: AqiLevelBodyProps) {
+function AqiLevelBody({
+  level,
+  showSensitiveGroups,
+  sensitiveGroupsTitle,
+  sensitiveGroups,
+}: AqiLevelBodyProps) {
   return (
     <View style={styles.levelBody}>
       <View style={[styles.levelLeft, { backgroundColor: level.leftColor }]}>
@@ -164,7 +139,7 @@ function AqiLevelBody({ level, showSensitiveGroups }: AqiLevelBodyProps) {
         ))}
         {showSensitiveGroups ? (
           <View style={styles.sensitiveSection}>
-            <Text style={styles.sensitiveTitle}>Who counts as a sensitive group?</Text>
+            <Text style={styles.sensitiveTitle}>{sensitiveGroupsTitle}</Text>
             {sensitiveGroups.map((group) => (
               <Text key={group} style={styles.sensitiveItem}>
                 {'\u2022'} {group}
@@ -185,10 +160,12 @@ function AqiLevelBody({ level, showSensitiveGroups }: AqiLevelBodyProps) {
 }
 
 type AqiCategoryRowProps = {
-  level: AqiLevel;
+  level: EducationAqiLevel;
   expanded: boolean;
   isLast: boolean;
   showSensitiveGroups: boolean;
+  sensitiveGroupsTitle: string;
+  sensitiveGroups: string[];
   onToggle: () => void;
 };
 
@@ -197,8 +174,18 @@ function AqiCategoryRow({
   expanded,
   isLast,
   showSensitiveGroups,
+  sensitiveGroupsTitle,
+  sensitiveGroups,
   onToggle,
 }: AqiCategoryRowProps) {
+  const levelBody = (
+    <AqiLevelBody
+      level={level}
+      showSensitiveGroups={showSensitiveGroups}
+      sensitiveGroupsTitle={sensitiveGroupsTitle}
+      sensitiveGroups={sensitiveGroups}
+    />
+  );
   const progress = useSharedValue(expanded ? 1 : 0);
   const [bodyHeight, setBodyHeight] = useState(0);
 
@@ -278,7 +265,7 @@ function AqiCategoryRow({
             accessibilityState={{ expanded }}
             accessibilityLabel={`${level.label}, ${level.range}`}
           >
-            <AqiLevelBody level={level} showSensitiveGroups={showSensitiveGroups} />
+            {levelBody}
             <View style={styles.expandedChevron}>
               <Animated.View style={chevronStyle}>
                 <Ionicons name="chevron-down" size={18} color="#475569" />
@@ -289,83 +276,203 @@ function AqiCategoryRow({
       </Animated.View>
 
       <View style={styles.measureHost} pointerEvents="none">
-        <View onLayout={onBodyLayout}>
-          <AqiLevelBody level={level} showSensitiveGroups={showSensitiveGroups} />
-        </View>
+        <View onLayout={onBodyLayout}>{levelBody}</View>
       </View>
     </View>
   );
 }
 
 export function EducationHubScreen() {
-  const [expandedLabel, setExpandedLabel] = useState<string | null>(null);
+  const [language, setLanguage] = useState<AppLanguage>('en');
+  const [expandedLevelId, setExpandedLevelId] = useState<EducationAqiLevelId | null>(null);
+  const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
+  const copy = educationCopy[language];
 
-  const onToggleRow = useCallback((label: string) => {
-    setExpandedLabel((current) => (current === label ? null : label));
+  useEffect(() => {
+    setActiveVideoId(null);
+    setExpandedLevelId(null);
+  }, [language]);
+
+  const onToggleRow = useCallback((levelId: EducationAqiLevelId) => {
+    setExpandedLevelId((current) => (current === levelId ? null : levelId));
+  }, []);
+
+  const onToggleVideo = useCallback((videoId: string) => {
+    setActiveVideoId((current) => (current === videoId ? null : videoId));
   }, []);
 
   return (
-    <ScrollView contentContainerStyle={styles.content} style={styles.container}>
-      <View style={styles.pmCard}>
-        <Text style={styles.pmTitle}>About PM2.5</Text>
-        <Text style={styles.pmBody}>
-          PM2.5 are fine particles small enough to travel deep into the lungs and sometimes into the bloodstream.
-          Common sources include wildfire smoke, traffic emissions, industry, and burning fuels.
-        </Text>
-        <Text style={styles.pmBody}>
-          Even short-term exposure can worsen asthma and heart symptoms. Long-term exposure is linked to higher
-          risk of respiratory and cardiovascular disease.
-        </Text>
-      </View>
-
-      <View style={styles.aqiTable}>
-        {levels.map((level, index) => (
-          <AqiCategoryRow
-            key={level.label}
-            level={level}
-            expanded={expandedLabel === level.label}
-            isLast={index === levels.length - 1}
-            showSensitiveGroups={level.label === 'Unhealthy for Sensitive Groups'}
-            onToggle={() => onToggleRow(level.label)}
-          />
-        ))}
-      </View>
-
-      <View style={styles.videoSection}>
-        <Text style={styles.videoSectionTitle}>Video Learning</Text>
-        <Text style={styles.videoSectionSubtitle}>Watch these quick explainers on AQI, PM2.5, and air-safety habits.</Text>
-        {educationVideos.map((video) => (
-          <View key={video.title} style={styles.videoCard}>
-            <Text style={styles.videoTitle}>{video.title}</Text>
-            <View style={styles.videoFrame}>
-              <Video
-                source={toPlaybackSource(video.source)}
-                style={styles.videoPlayer}
-                useNativeControls
-                resizeMode={ResizeMode.COVER}
-                isLooping={false}
-              />
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        style={styles.scroll}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.heroCard}>
+          <View style={styles.headerTopRow}>
+            <View style={styles.titleRow}>
+              <View style={styles.titleIconWrap}>
+                <Ionicons name="school" size={22} color={educationTheme.accentColor} />
+              </View>
+              <Text style={styles.pageTitle}>Education</Text>
             </View>
+            <LanguageToggle value={language} onChange={setLanguage} />
           </View>
-        ))}
-      </View>
-    </ScrollView>
+          <Text style={styles.pageSubtitle}>{copy.pageSubtitle}</Text>
+        </View>
+
+        <EducationSection stepLabel={copy.pmSectionLabel} title={copy.pmTitle}>
+          {copy.pmBody.map((paragraph) => (
+            <Text key={paragraph} style={styles.bodyText}>
+              {paragraph}
+            </Text>
+          ))}
+        </EducationSection>
+
+        <EducationSection
+          stepLabel={copy.aqiSectionLabel}
+          title={copy.aqiSectionTitle}
+          subtitle={copy.aqiSectionSubtitle}
+        >
+          <View style={styles.aqiTable}>
+            {copy.aqiLevels.map((level, index) => (
+              <AqiCategoryRow
+                key={level.id}
+                level={level}
+                expanded={expandedLevelId === level.id}
+                isLast={index === copy.aqiLevels.length - 1}
+                showSensitiveGroups={level.id === 'usg'}
+                sensitiveGroupsTitle={copy.sensitiveGroupsTitle}
+                sensitiveGroups={copy.sensitiveGroups}
+                onToggle={() => onToggleRow(level.id)}
+              />
+            ))}
+          </View>
+        </EducationSection>
+
+        <EducationSection
+          stepLabel={copy.healthSectionLabel}
+          title={copy.healthSectionTitle}
+          subtitle={copy.healthSectionSubtitle}
+        >
+          <AqiHealthExplorer copy={copy.healthExplorer} />
+        </EducationSection>
+
+        <EducationSection
+          stepLabel={copy.videoSectionLabel}
+          title={copy.videoSectionTitle}
+          subtitle={copy.videoSectionSubtitle}
+        >
+          {copy.videos.map((video) => (
+            <VideoLearningCard
+              key={video.videoId}
+              video={video}
+              expanded={activeVideoId === video.videoId}
+              tapHint={copy.videoTapHint}
+              playingHint={copy.videoPlayingHint}
+              onPress={() => onToggleVideo(video.videoId)}
+            />
+          ))}
+        </EducationSection>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f3f4f6',
+    backgroundColor: educationTheme.screenBackground,
+  },
+  scroll: {
+    flex: 1,
   },
   content: {
-    padding: 12,
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: educationTheme.sectionGap,
+  },
+  heroCard: {
+    backgroundColor: educationTheme.cardBackground,
+    borderRadius: educationTheme.cardRadius,
+    borderWidth: 1,
+    borderColor: educationTheme.cardBorderColor,
+    padding: educationTheme.cardPadding,
+    gap: 10,
+    ...educationTheme.shadow,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
     gap: 10,
   },
-  aqiTable: {
-    backgroundColor: '#ffffff',
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  titleIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: educationTheme.innerSurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pageTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: educationTheme.titleColor,
+    letterSpacing: -0.3,
+  },
+  pageSubtitle: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: educationTheme.bodyColor,
+  },
+  sectionCard: {
+    backgroundColor: educationTheme.cardBackground,
+    borderRadius: educationTheme.cardRadius,
     borderWidth: 1,
-    borderColor: '#d1d5db',
+    borderColor: educationTheme.cardBorderColor,
+    padding: educationTheme.cardPadding,
+    gap: 6,
+    ...educationTheme.shadow,
+  },
+  sectionStepLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: educationTheme.mutedColor,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: educationTheme.titleColor,
+  },
+  sectionSubtitle: {
+    fontSize: 12.5,
+    lineHeight: 18,
+    color: educationTheme.bodyColor,
+    marginBottom: 4,
+  },
+  sectionBody: {
+    gap: 10,
+    marginTop: 4,
+  },
+  bodyText: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: '#374151',
+  },
+  aqiTable: {
+    borderWidth: 1,
+    borderColor: educationTheme.cardBorderColor,
     borderRadius: 10,
     overflow: 'hidden',
   },
@@ -374,7 +481,7 @@ const styles = StyleSheet.create({
   },
   tableRowDivider: {
     borderBottomWidth: 1,
-    borderBottomColor: '#d1d5db',
+    borderBottomColor: educationTheme.cardBorderColor,
   },
   collapsedBar: {
     position: 'absolute',
@@ -426,7 +533,7 @@ const styles = StyleSheet.create({
   },
   levelBody: {
     flexDirection: 'row',
-    backgroundColor: '#ffffff',
+    backgroundColor: educationTheme.cardBackground,
   },
   levelLeft: {
     width: 92,
@@ -464,8 +571,8 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#e2d6b2',
-    backgroundColor: '#f8f2df',
+    borderTopColor: educationTheme.cardBorderColor,
+    backgroundColor: educationTheme.innerSurface,
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingBottom: 6,
@@ -490,69 +597,59 @@ const styles = StyleSheet.create({
   },
   actionChip: {
     borderWidth: 1,
-    borderColor: '#cbd5e1',
+    borderColor: educationTheme.cardBorderColor,
     borderRadius: 999,
     paddingHorizontal: 9,
     paddingVertical: 4,
-    backgroundColor: '#f8fafc',
+    backgroundColor: educationTheme.innerSurface,
   },
   actionChipText: {
     fontSize: 11,
     fontWeight: '600',
     color: '#475569',
   },
-  pmCard: {
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
-    padding: 12,
-  },
-  pmTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#0f172a',
-    marginBottom: 8,
-  },
-  pmBody: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: '#374151',
-    marginBottom: 6,
-  },
-  videoSection: {
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 18,
-    gap: 10,
-  },
-  videoSectionTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#0f172a',
-  },
-  videoSectionSubtitle: {
-    fontSize: 12.5,
-    lineHeight: 18,
-    color: '#475569',
-  },
   videoCard: {
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: educationTheme.cardBorderColor,
     borderRadius: 10,
-    padding: 8,
-    backgroundColor: '#f8fafc',
+    backgroundColor: educationTheme.innerSurface,
+    overflow: 'hidden',
+  },
+  videoCardExpanded: {
+    borderColor: '#cbd5e1',
+    backgroundColor: educationTheme.cardBackground,
+  },
+  videoCardPressable: {
+    padding: 10,
+  },
+  videoCardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  videoThumbnail: {
+    width: 112,
+    height: 63,
+    borderRadius: 6,
+    backgroundColor: '#0f172a',
+  },
+  videoCardText: {
+    flex: 1,
+    gap: 4,
   },
   videoTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#1e293b',
-    marginBottom: 6,
+    color: educationTheme.titleColor,
+  },
+  videoHint: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: educationTheme.mutedColor,
   },
   videoFrame: {
+    marginHorizontal: 10,
+    marginBottom: 8,
     borderRadius: 8,
     overflow: 'hidden',
     height: 200,

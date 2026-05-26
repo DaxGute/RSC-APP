@@ -1,10 +1,11 @@
-/** Breakpoints aligned with `map_graph.PM25_AQI_BOUNDS` in SSF-AQI. */
+import {
+  PM25_GRADIENT_CLAMP_MAX,
+  PM25_GRADIENT_EDGES,
+  PM25_CATEGORY_COLORS,
+  pm25BreakpointCategory,
+} from './airQualityBreakpoints';
 
-import { pm25BreakpointCategory } from './aqiUtils';
-
-export const PM25_AQI_BOUNDS = [0.0, 9.0, 35.4, 55.4, 125.4, 225.4, 325.4] as const;
-
-const CMAP_HEX = ['#00E400', '#FFFF00', '#FF7E00', '#FF0000', '#8F3F97', '#7E0023'] as const;
+export { PM25_AQI_BOUNDS, PM25_GRADIENT_EDGES, PM25_BREAKPOINT_EDGES } from './airQualityBreakpoints';
 
 export type Pm25LegendBand = {
   flex: number;
@@ -27,12 +28,12 @@ function mergeAdjacentSameCategory(bands: Pm25LegendBand[]): Pm25LegendBand[] {
 }
 
 /**
- * Visible PM2.5 legend segments from 0 to `maxPm` (µg/m³), EPA category colors.
+ * Visible PM2.5 legend segments from 0 to `maxPm` (µg/m³), canonical category colors.
  * High PM2.5 first (top of column). Values above the last breakpoint use the top category.
  */
 export function buildPm25LegendBands(maxPm: number): Pm25LegendBand[] {
   const max = Math.max(0, Number.isFinite(maxPm) ? maxPm : 0);
-  const bounds = PM25_AQI_BOUNDS;
+  const bounds = PM25_GRADIENT_EDGES;
   const cap = bounds[bounds.length - 1];
 
   if (max <= 0) {
@@ -68,8 +69,8 @@ function clamp(n: number, lo: number, hi: number): number {
 /** Piecewise-linear color between PM2.5 bands (display only). */
 export function pm25ToGradientColor(pm25: number | null | undefined): string {
   if (pm25 == null || !Number.isFinite(pm25)) return '#94a3b8';
-  const v = clamp(pm25, 0, 325.4);
-  const b = PM25_AQI_BOUNDS;
+  const v = clamp(pm25, 0, PM25_GRADIENT_CLAMP_MAX);
+  const b = PM25_GRADIENT_EDGES;
   let i = 0;
   for (let k = 0; k < b.length - 1; k++) {
     if (v >= b[k] && v <= b[k + 1]) {
@@ -80,10 +81,10 @@ export function pm25ToGradientColor(pm25: number | null | undefined): string {
   }
   i = clamp(i, 0, b.length - 2);
   const t = (v - b[i]) / Math.max(1e-9, b[i + 1] - b[i]);
-  if (i + 1 >= CMAP_HEX.length) {
-    return CMAP_HEX[CMAP_HEX.length - 1];
+  if (i + 1 >= PM25_CATEGORY_COLORS.length) {
+    return PM25_CATEGORY_COLORS[PM25_CATEGORY_COLORS.length - 1];
   }
-  return interpolateHex(CMAP_HEX[i], CMAP_HEX[i + 1], clamp(t, 0, 1));
+  return interpolateHex(PM25_CATEGORY_COLORS[i], PM25_CATEGORY_COLORS[i + 1], clamp(t, 0, 1));
 }
 
 function interpolateHex(a: string, b: string, t: number): string {

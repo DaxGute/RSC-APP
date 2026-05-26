@@ -1,9 +1,7 @@
 import { FontAwesome } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import type { RefObject } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -27,10 +25,13 @@ import { milesBetweenKm } from '../lib/geoUtils';
 import { computeSsfSelection } from '../lib/ssfSelection';
 import type { SensorPoint } from '../lib/sensorTypes';
 import type { FetchError } from '../lib/fetchAirQuality';
+import type { Metric } from '../lib/metric';
+import { MetricFade } from './MetricFade';
+import { MetricToggle } from './MetricToggle';
 
-export type Metric = 'pm25' | 'aqi';
+export type { Metric } from '../lib/metric';
 
-function sheetPanelTitle(panel: { kind: string }): string {
+function sheetPanelTitle(panel: { kind: string; isSensorReading?: boolean }): string {
   switch (panel.kind) {
     case 'oob':
       return 'Out of bounds';
@@ -39,61 +40,17 @@ function sheetPanelTitle(panel: { kind: string }): string {
     case 'placeholder':
       return 'Click a point on the map';
     case 'ok':
-      return 'Air quality estimate';
+      return panel.isSensorReading ? 'Sensor Reading' : 'Air Quality Estimate';
     default:
-      return 'Air quality estimate';
+      return 'Air Quality Estimate';
   }
 }
 
-const AQI_HEALTH_PAPER_URL =
-  'https://www.sciencedirect.com/science/article/pii/S0160412020318316';
-
-const BMJ_PM25_HOSPITAL_ER_URL = 'https://www.bmj.com/content/384/bmj-2023-076322';
-
-/** Outdoor mask efficacy — fixed pooled estimate (does not scale with PM2.5 at this point). */
-const OUTDOOR_MASK_PAPER_URL =
-  'https://www.sciencedirect.com/science/article/abs/pii/S1309104223001940';
-const OUTDOOR_MASK_EFFICACY_PCT = 72;
-const OUTDOOR_MASK_CI_LO_PCT = 43;
-const OUTDOOR_MASK_CI_HI_PCT = 86;
-
-/** Indoor filter efficacy — fixed pooled estimate (does not scale with PM2.5 at this point). */
-const INDOOR_FILTER_PAPER_URL =
-  'https://www.sciencedirect.com/science/article/abs/pii/S0048969720361143';
-const INDOOR_FILTER_EFFICACY_PCT = 57;
-const INDOOR_FILTER_CI_LO_PCT = 22.6;
-const INDOOR_FILTER_CI_HI_PCT = 92.0;
-
-/**
- * Meta-analysis (short-term PM2.5): effect scaled from +65% / ±21% per +10 µg/m³; values are divided by 100
- * so displayed percentages match the literature scale used in the UI.
- */
-function mortalityPercentFromInterpolatedPm25(
-  pm25UgM3: number | null | undefined,
-): { pct: number; uncPct: number } | null {
-  if (pm25UgM3 == null || !Number.isFinite(pm25UgM3) || pm25UgM3 <= 0) return null;
-  const per10 = pm25UgM3 / 10;
-  return { pct: (per10 * 65) / 100, uncPct: (per10 * 21) / 100 };
-}
-
-/** Linear scale of per–10 µg/m³ effect to current interpolated µg/m³. */
-function scalePer10ug(
-  pm25UgM3: number | null | undefined,
-  per10: number,
-  per10Lo: number,
-  per10Hi: number,
-): { mid: number; lo: number; hi: number } | null {
-  if (pm25UgM3 == null || !Number.isFinite(pm25UgM3) || pm25UgM3 <= 0) return null;
-  const k = pm25UgM3 / 10;
-  return { mid: k * per10, lo: k * per10Lo, hi: k * per10Hi };
-}
-
-function formatSmallPct(n: number): string {
-  return n >= 0 ? `+${n.toFixed(2)}%` : `${n.toFixed(2)}%`;
-}
-
-function formatCiPct(lo: number, hi: number): string {
-  return `${lo.toFixed(2)}–${hi.toFixed(2)}%`;
+function metricHeroLabel(metric: Metric, isSensorReading: boolean): string {
+  if (isSensorReading) {
+    return metric === 'aqi' ? 'Observed AQI' : 'Observed PM2.5';
+  }
+  return metric === 'aqi' ? 'Predicted AQI' : 'Predicted PM2.5';
 }
 
 /** Preset cooldowns for the reminder modal (minutes). Default selection is 60. Labels are short so the row fits on one line. */
@@ -134,197 +91,10 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-type HealthTooltipAnchor = { x: number; y: number; w: number; h: number };
-
-function HealthTooltipLeftCell({
-  title,
-  subtitleBeforeLink,
-  onLinkPress,
-}: {
-  title: string;
-  subtitleBeforeLink: string;
-  onLinkPress: () => void;
-}) {
-  return (
-    <View style={styles.healthTooltipSilentLeft}>
-      <Text style={styles.healthTooltipTitle}>{title}</Text>
-      <Text style={styles.healthTooltipSub}>
-        {subtitleBeforeLink}{' '}
-        <Text style={styles.aqiStatsLinkInline} onPress={onLinkPress}>
-          (link)
-        </Text>
-      </Text>
-    </View>
-  );
-}
-
-function HealthStatsTooltipBubble({
-  anchor,
-  predPm25,
-  onMortalityLink,
-  onBmjLink,
-  onOutdoorMaskLink,
-  onIndoorFilterLink,
-  placement,
-  winW,
-  winH,
-}: {
-  anchor: HealthTooltipAnchor;
-  predPm25: number | null;
-  onMortalityLink: () => void;
-  onBmjLink: () => void;
-  onOutdoorMaskLink: () => void;
-  onIndoorFilterLink: () => void;
-  /** `above`: anchor the bubble upward (e.g. bottom sheet). `below`: under the ? chip. */
-  placement: 'above' | 'below';
-  winW: number;
-  winH: number;
-}) {
-  const mort = mortalityPercentFromInterpolatedPm25(predPm25);
-  /** BMJ: respiratory ED visits, per +10 µg/m³ two-day PM2.5 */
-  const erErr = scalePer10ug(predPm25, 1.34, 0.73, 1.94);
-
-  const PAD = 12;
-  /** Gap between ? chip and tooltip (below: under the chip; above: above the chip). */
-  const TOOLTIP_EDGE_GAP = 8;
-  const ARROW = 7;
-  const BUBBLE_MAX_W = 320;
-  const scrollMaxHBase = Math.min(400, winH * 0.52);
-  /** When opening above, cap scroll height so the bubble stays on-screen above the ?. */
-  const scrollMaxH =
-    placement === 'above'
-      ? Math.min(scrollMaxHBase, Math.max(140, anchor.y - PAD - TOOLTIP_EDGE_GAP - 44))
-      : scrollMaxHBase;
-  const ax = anchor.x + anchor.w / 2;
-  const bw = Math.min(BUBBLE_MAX_W, winW - 2 * PAD);
-  const left = Math.max(PAD, Math.min(ax - bw / 2, winW - PAD - bw));
-  const triW = ARROW * 2;
-  const arrowPad = 6;
-  const arrowLeftRaw = ax - left - ARROW;
-  const arrowLeftMax = bw - triW - arrowPad;
-  const arrowLeft = Math.min(Math.max(arrowLeftRaw, arrowPad), Math.max(arrowLeftMax, arrowPad));
-
-  const wrapPositionStyle =
-    placement === 'below'
-      ? ({
-          left,
-          top: anchor.y + anchor.h + TOOLTIP_EDGE_GAP,
-          width: bw,
-        } as const)
-      : ({
-          left,
-          bottom: winH - anchor.y + TOOLTIP_EDGE_GAP,
-          width: bw,
-          maxHeight: Math.min(scrollMaxH + 56, anchor.y - PAD - TOOLTIP_EDGE_GAP),
-        } as const);
-
-  const mortalityRight = mort ? (
-    <>
-      <Text style={styles.aqiStatsTdValueRed}>{formatSmallPct(mort.pct)}</Text>
-      <Text style={styles.healthTooltipErrCi}>
-        {formatCiPct(mort.pct - mort.uncPct, mort.pct + mort.uncPct)}
-      </Text>
-    </>
-  ) : (
-    <Text style={styles.healthTooltipEmDash}>—</Text>
-  );
-
-  const bmjErrBlock = (s: { mid: number; lo: number; hi: number } | null) =>
-    s ? (
-      <>
-        <Text style={styles.aqiStatsTdValueRed}>{formatSmallPct(s.mid)}</Text>
-        <Text style={styles.healthTooltipErrCi}>{formatCiPct(s.lo, s.hi)}</Text>
-      </>
-    ) : (
-      <Text style={styles.healthTooltipEmDash}>—</Text>
-    );
-
-  const outdoorMaskRight = (
-    <>
-      <Text style={styles.healthTooltipValueGreen}>{`${OUTDOOR_MASK_EFFICACY_PCT}%`}</Text>
-      <Text style={styles.healthTooltipErrCi}>
-        {formatCiPct(OUTDOOR_MASK_CI_LO_PCT, OUTDOOR_MASK_CI_HI_PCT)}
-      </Text>
-    </>
-  );
-
-  const indoorFilterRight = (
-    <>
-      <Text style={styles.healthTooltipValueGreen}>{`${INDOOR_FILTER_EFFICACY_PCT}%`}</Text>
-      <Text style={styles.healthTooltipErrCi}>
-        {formatCiPct(INDOOR_FILTER_CI_LO_PCT, INDOOR_FILTER_CI_HI_PCT)}
-      </Text>
-    </>
-  );
-
-  const cardAndScroll = (
-    <View style={styles.healthTooltipCard}>
-      <ScrollView
-        style={{ maxHeight: scrollMaxH }}
-        nestedScrollEnabled
-        showsVerticalScrollIndicator
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.healthTooltipTableRow}>
-          <HealthTooltipLeftCell
-            title="Mortality Risk"
-            subtitleBeforeLink="Evidence from a meta-analysis on short-term PM2.5"
-            onLinkPress={onMortalityLink}
-          />
-          <View style={styles.healthTooltipSilentRight}>{mortalityRight}</View>
-        </View>
-        <View style={styles.healthTooltipRowDivider} />
-        <View style={styles.healthTooltipTableRow}>
-          <HealthTooltipLeftCell
-            title="ER Visit Rate"
-            subtitleBeforeLink="respiratory visits vs two-day PM2.5; excess relative risk"
-            onLinkPress={onBmjLink}
-          />
-          <View style={styles.healthTooltipSilentRight}>{bmjErrBlock(erErr)}</View>
-        </View>
-        <View style={styles.healthTooltipRowDivider} />
-        <View style={styles.healthTooltipTableRow}>
-          <HealthTooltipLeftCell
-            title="Outdoor Mask Efficacy"
-            subtitleBeforeLink="Pooled outdoor estimate; With proper use"
-            onLinkPress={onOutdoorMaskLink}
-          />
-          <View style={styles.healthTooltipSilentRight}>{outdoorMaskRight}</View>
-        </View>
-        <View style={styles.healthTooltipRowDivider} />
-        <View style={styles.healthTooltipTableRow}>
-          <HealthTooltipLeftCell
-            title="Indoor Filter Efficacy"
-            subtitleBeforeLink="Pooled indoor estimate; With proper use and scale"
-            onLinkPress={onIndoorFilterLink}
-          />
-          <View style={styles.healthTooltipSilentRight}>{indoorFilterRight}</View>
-        </View>
-      </ScrollView>
-    </View>
-  );
-
-  return (
-    <View style={[styles.healthTooltipWrap, wrapPositionStyle]} pointerEvents="box-none">
-      {placement === 'below' ? (
-        <>
-          <View style={[styles.healthTooltipArrowUp, { left: arrowLeft }]} />
-          {cardAndScroll}
-        </>
-      ) : (
-        <>
-          {cardAndScroll}
-          <View style={[styles.healthTooltipArrowDown, { left: arrowLeft }]} />
-        </>
-      )}
-    </View>
-  );
-}
-
 export type AqiPanelProps = {
   selected: { lat: number; lon: number } | null;
   selectedLabel?: string | null;
-  selectedSensor?: { sensorIndex: number; source?: string } | null;
+  selectedSensor?: { sensorIndex: number | string; source?: string } | null;
   loading: boolean;
   error: FetchError | null;
   sensors: SensorPoint[];
@@ -356,11 +126,8 @@ export type AqiPanelProps = {
   savedReminderCooldownMinutes?: number | null;
   /** Increment from parent to open the reminder modal without duplicating modal UI. */
   openReminderModalSignal?: number;
-  /**
-   * Health tooltip relative to the ? control. Use `above` when the panel sits at the bottom of the screen
-   * so the popover stays visible; `below` when there is room under the chip (e.g. lifted center sheet).
-   */
-  healthTooltipPlacement?: 'above' | 'below';
+  /** Called when the user starts touching this panel surface. */
+  onPanelTouchStart?: () => void;
 };
 
 export function AqiPanel({
@@ -382,54 +149,15 @@ export function AqiPanel({
   savedReminderCategoryIndex = null,
   savedReminderCooldownMinutes = null,
   openReminderModalSignal = 0,
-  healthTooltipPlacement = 'below',
+  onPanelTouchStart,
 }: AqiPanelProps) {
-  const { width: winW, height: winH } = useWindowDimensions();
+  const { width: winW } = useWindowDimensions();
   const isNarrow = winW <= 640;
   const [metric, setMetric] = useState<Metric>('pm25');
   const [reminderModalOpen, setReminderModalOpen] = useState(false);
-  const [healthTooltipOpen, setHealthTooltipOpen] = useState(false);
-  const [healthTooltipAnchor, setHealthTooltipAnchor] = useState<HealthTooltipAnchor | null>(null);
-  const healthHelpAnchorRef = useRef<View>(null);
   /** Snapshot when modal opens: only then show Clear (avoids Clear appearing mid-close after first-time save). */
   const [reminderHadClearWhenOpened, setReminderHadClearWhenOpened] = useState(false);
   const [reminderCooldownMinutes, setReminderCooldownMinutes] = useState(60);
-
-  const closeHealthTooltip = useCallback(() => {
-    setHealthTooltipOpen(false);
-    setHealthTooltipAnchor(null);
-  }, []);
-
-  const openHealthTooltip = useCallback(() => {
-    healthHelpAnchorRef.current?.measureInWindow((x, y, w, h) => {
-      setHealthTooltipAnchor({ x, y, w, h });
-      setHealthTooltipOpen(true);
-    });
-  }, []);
-
-  const openMortalityPaperLink = useCallback(() => {
-    void Linking.openURL(AQI_HEALTH_PAPER_URL).catch(() => {
-      /* ignore */
-    });
-  }, []);
-
-  const openBmjPaperLink = useCallback(() => {
-    void Linking.openURL(BMJ_PM25_HOSPITAL_ER_URL).catch(() => {
-      /* ignore */
-    });
-  }, []);
-
-  const openOutdoorMaskPaperLink = useCallback(() => {
-    void Linking.openURL(OUTDOOR_MASK_PAPER_URL).catch(() => {
-      /* ignore */
-    });
-  }, []);
-
-  const openIndoorFilterPaperLink = useCallback(() => {
-    void Linking.openURL(INDOOR_FILTER_PAPER_URL).catch(() => {
-      /* ignore */
-    });
-  }, []);
 
   const openReminderModal = useCallback(() => {
     setReminderHadClearWhenOpened(reminderBellActive);
@@ -475,19 +203,19 @@ export function AqiPanel({
       return { kind: 'msg' as const, msg: 'No sensor or grid data yet.' };
     }
 
+    const isSensorReading = selectedSensor != null;
     const base = computeSsfSelection(lat, lon, sensors, kriging);
-    const exactSelectedSensor =
-      selectedSensor != null
-        ? sensors.find(
-            (s) =>
-              s.sensorIndex === selectedSensor.sensorIndex &&
-              (selectedSensor.source == null || s.source === selectedSensor.source),
-          ) ?? sensors.find((s) => s.sensorIndex === selectedSensor.sensorIndex)
-        : null;
-    const predPm25 = exactSelectedSensor?.pm25 ?? base.predPm25;
-    const closest = exactSelectedSensor
-      ? { lat: exactSelectedSensor.latitude, lon: exactSelectedSensor.longitude, pm25: exactSelectedSensor.pm25, distKm: 0 }
-      : base.closest;
+    const exactSelectedSensor = isSensorReading
+      ? sensors.find(
+          (s) =>
+            s.sensorIndex === selectedSensor!.sensorIndex &&
+            (selectedSensor!.source == null || s.source === selectedSensor!.source),
+        ) ?? sensors.find((s) => s.sensorIndex === selectedSensor!.sensorIndex)
+      : null;
+    const predPm25 =
+      isSensorReading && exactSelectedSensor != null
+        ? exactSelectedSensor.pm25
+        : base.predPm25;
     const predPm25Category = pm25BreakpointCategory(predPm25);
     const predAqi = pm25ToAqi(predPm25);
     const aqiCat = aqiCategory(predAqi);
@@ -500,7 +228,8 @@ export function AqiPanel({
       predPm25Category,
       predAqi,
       aqiCat,
-      closest,
+      isSensorReading,
+      closest: isSensorReading ? null : base.closest,
     };
   }, [selected, loading, error, sensors, kriging, mapRegion, selectedSensor]);
 
@@ -518,7 +247,11 @@ export function AqiPanel({
 
   return (
     <LinearGradient
-      colors={sheetDocked ? ['#ffffff', '#ffffff'] : ['rgba(255,255,255,0.92)', 'rgba(255,255,255,0.78)']}
+      colors={
+        sheetDocked
+          ? ['#ffffff', '#ffffff']
+          : ['rgba(255,255,255,0.92)', 'rgba(255,255,255,0.78)']
+      }
       style={[
         styles.shellOuter,
         compact && styles.shellOuterCompact,
@@ -526,6 +259,14 @@ export function AqiPanel({
         compact && styles.shellOuterSheetFlex,
         sheetDocked && styles.shellOuterDocked,
       ]}
+      onStartShouldSetResponderCapture={() => {
+        onPanelTouchStart?.();
+        return false;
+      }}
+      onMoveShouldSetResponderCapture={() => {
+        onPanelTouchStart?.();
+        return false;
+      }}
     >
       <View style={[styles.shell, compact && styles.shellSheetFlex]}>
         {compact ? (
@@ -572,8 +313,6 @@ export function AqiPanel({
                 heroAccent={heroAccent}
                 heroValueSize={heroValueSize}
                 cardValueSize={cardValueSize}
-                onHealthHelpPress={openHealthTooltip}
-                healthHelpAnchorRef={healthHelpAnchorRef}
               />
             </View>
           </>
@@ -645,19 +384,9 @@ export function AqiPanel({
                   end={{ x: 0.35, y: 1 }}
                   style={[styles.hero, styles.heroShadow, { shadowColor: '#94a3b8' }]}
                 >
-                  <Pressable
-                    ref={healthHelpAnchorRef}
-                    onPress={openHealthTooltip}
-                    hitSlop={10}
-                    style={styles.heroHelpBtn}
-                    accessibilityRole="button"
-                    accessibilityLabel="Health summary for this estimate"
-                  >
-                    <Text style={styles.heroHelpBtnMark}>?</Text>
-                  </Pressable>
-                  <View style={styles.heroInner}>
+                  <MetricFade contentKey={`ph-${metric}`} style={styles.heroInner}>
                     <Text style={styles.heroLabel}>
-                      {metric === 'aqi' ? 'Predicted AQI' : 'Predicted PM2.5'}
+                      {metricHeroLabel(metric, false)}
                     </Text>
                     <View style={styles.heroRow}>
                       <Text style={[styles.heroValue, { fontSize: heroValueSize }]}>—</Text>
@@ -666,7 +395,7 @@ export function AqiPanel({
                     <View style={styles.badge}>
                       <Text style={styles.badgeText}>No data</Text>
                     </View>
-                  </View>
+                  </MetricFade>
                 </LinearGradient>
               </View>
             </>
@@ -674,7 +403,9 @@ export function AqiPanel({
             <>
               <View style={styles.modernTop}>
                 <View style={styles.modernTopLeft}>
-                  <Text style={styles.eyebrow}>Air quality estimate</Text>
+                  <Text style={styles.eyebrow}>
+                    {panel.isSensorReading ? 'Sensor Reading' : 'Air Quality Estimate'}
+                  </Text>
                   <Text style={styles.coords}>
                     {selectedLabel ?? `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
                   </Text>
@@ -688,19 +419,12 @@ export function AqiPanel({
                   end={{ x: 0, y: 1 }}
                   style={[styles.hero, styles.heroShadow, { shadowColor: heroAccent }]}
                 >
-                  <Pressable
-                    ref={healthHelpAnchorRef}
-                    onPress={openHealthTooltip}
-                    hitSlop={10}
-                    style={styles.heroHelpBtn}
-                    accessibilityRole="button"
-                    accessibilityLabel="Health summary for this estimate"
+                  <MetricFade
+                    contentKey={`ok-${metric}-${panel.predAqi ?? 'x'}-${panel.predPm25 ?? 'x'}`}
+                    style={styles.heroInner}
                   >
-                    <Text style={styles.heroHelpBtnMark}>?</Text>
-                  </Pressable>
-                  <View style={styles.heroInner}>
                     <Text style={styles.heroLabel}>
-                      {metric === 'aqi' ? 'Predicted AQI' : 'Predicted PM2.5'}
+                      {metricHeroLabel(metric, panel.isSensorReading)}
                     </Text>
                     <View style={styles.heroRow}>
                       <Text style={[styles.heroValue, { fontSize: heroValueSize }]}>
@@ -719,35 +443,21 @@ export function AqiPanel({
                         {metric === 'aqi' ? panel.aqiCat.label : panel.predPm25Category.label}
                       </Text>
                     </View>
-                  </View>
+                  </MetricFade>
                 </LinearGradient>
               </View>
             </>
           ) : null}
 
           <View style={styles.metricToggleDock}>
-            <View style={styles.metricToggle}>
-              <Pressable
-                onPress={() => setMetric('pm25')}
-                style={[styles.metricPill, metric === 'pm25' && styles.metricPillActive]}
-              >
-                <Text style={[styles.metricPillText, metric === 'pm25' && styles.metricPillTextActive]}>
-                  PM2.5
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setMetric('aqi')}
-                style={[styles.metricPill, metric === 'aqi' && styles.metricPillActive]}
-              >
-                <Text style={[styles.metricPillText, metric === 'aqi' && styles.metricPillTextActive]}>
-                  AQI
-                </Text>
-              </Pressable>
-            </View>
+            <MetricToggle metric={metric} onMetricChange={setMetric} />
           </View>
 
-          {panel.kind === 'ok' || panel.kind === 'placeholder' ? (
-            <View style={[styles.grid, styles.gridAfterToggle]}>
+          {(panel.kind === 'placeholder' || (panel.kind === 'ok' && !panel.isSensorReading)) ? (
+            <MetricFade
+              contentKey={`grid-${metric}-${panel.kind}`}
+              style={[styles.grid, styles.gridAfterToggle]}
+            >
               {panel.kind === 'placeholder' ? (
                 <>
                   <MiniCard
@@ -784,7 +494,7 @@ export function AqiPanel({
                   />
                 </>
               )}
-            </View>
+            </MetricFade>
           ) : null}
 
         </ScrollView>
@@ -911,35 +621,6 @@ export function AqiPanel({
           </View>
         </View>
       </Modal>
-
-      <Modal
-        visible={healthTooltipOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={closeHealthTooltip}
-      >
-        <View style={styles.healthTooltipModalRoot} pointerEvents="box-none">
-          <Pressable
-            style={styles.reminderModalBackdrop}
-            onPress={closeHealthTooltip}
-            accessibilityRole="button"
-            accessibilityLabel="Dismiss"
-          />
-          {healthTooltipAnchor ? (
-            <HealthStatsTooltipBubble
-              anchor={healthTooltipAnchor}
-              predPm25={panel.kind === 'ok' ? panel.predPm25 : null}
-              onMortalityLink={openMortalityPaperLink}
-              onBmjLink={openBmjPaperLink}
-              onOutdoorMaskLink={openOutdoorMaskPaperLink}
-              onIndoorFilterLink={openIndoorFilterPaperLink}
-              placement={healthTooltipPlacement}
-              winW={winW}
-              winH={winH}
-            />
-          ) : null}
-        </View>
-      </Modal>
     </LinearGradient>
   );
 }
@@ -956,6 +637,7 @@ type PanelState =
       predPm25Category: Pm25Category;
       predAqi: number | null;
       aqiCat: AqiCategory;
+      isSensorReading: boolean;
       closest: { lat: number; lon: number; pm25: number; distKm: number } | null;
     };
 
@@ -967,8 +649,6 @@ function CompactPanelBody({
   heroAccent,
   heroValueSize,
   cardValueSize,
-  onHealthHelpPress,
-  healthHelpAnchorRef,
 }: {
   panel: PanelState;
   selectedLabel?: string | null;
@@ -977,8 +657,6 @@ function CompactPanelBody({
   heroAccent: string;
   heroValueSize: number;
   cardValueSize: number;
-  onHealthHelpPress?: () => void;
-  healthHelpAnchorRef: RefObject<View | null>;
 }) {
   if (panel.kind === 'oob') {
     return (
@@ -1017,30 +695,11 @@ function CompactPanelBody({
   return (
     <>
       <View style={styles.compactCoordsRow}>
-        <Text style={styles.compactCoords} numberOfLines={1}>
+        <Text style={styles.compactCoords} numberOfLines={2}>
           {ph ? '-, -.' : selectedLabel ?? `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
         </Text>
         <View style={styles.compactToggleInHeader}>
-          <View style={styles.metricToggleCompact}>
-            <Pressable
-              onPress={() => setMetric('pm25')}
-              style={[styles.metricPillCompact, metric === 'pm25' && styles.metricPillActive]}
-            >
-              <Text
-                style={[styles.metricPillTextCompact, metric === 'pm25' && styles.metricPillTextActive]}
-              >
-                PM2.5
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setMetric('aqi')}
-              style={[styles.metricPillCompact, metric === 'aqi' && styles.metricPillActive]}
-            >
-              <Text style={[styles.metricPillTextCompact, metric === 'aqi' && styles.metricPillTextActive]}>
-                AQI
-              </Text>
-            </Pressable>
-          </View>
+          <MetricToggle metric={metric} onMetricChange={setMetric} compact />
         </View>
       </View>
 
@@ -1050,41 +709,31 @@ function CompactPanelBody({
         end={{ x: 1, y: 1 }}
         style={[styles.compactHeroGrad, { shadowColor: shadowC }, styles.compactHeroShadow]}
       >
-        <View
-          style={[
-            styles.compactHeroMain,
-            onHealthHelpPress != null ? styles.compactHeroMainWithHelp : null,
-          ]}
-        >
-          {onHealthHelpPress ? (
-            <Pressable
-              ref={healthHelpAnchorRef}
-              onPress={onHealthHelpPress}
-              hitSlop={8}
-              style={styles.heroHelpBtnCompact}
-              accessibilityRole="button"
-              accessibilityLabel="Health summary for this estimate"
-            >
-              <Text style={styles.heroHelpBtnMarkCompact}>?</Text>
-            </Pressable>
-          ) : null}
-          <Text style={styles.compactHeroLabel}>
-            {metric === 'aqi' ? 'Predicted AQI' : 'Predicted PM2.5'}
-          </Text>
-          <View style={styles.compactHeroValueRow}>
-            <Text style={[styles.compactHeroValue, { fontSize: heroValueSize }]}>{heroMainValue}</Text>
-            <Text style={styles.compactHeroUnit}>{metric === 'aqi' ? 'AQI' : 'µg/m³'}</Text>
-            <View style={styles.compactBadge}>
-              <Text style={styles.compactBadgeText} numberOfLines={1}>
-                {ph ? 'No data' : metric === 'aqi' ? panel.aqiCat.label : panel.predPm25Category.label}
-              </Text>
+        <View style={styles.compactHeroMain}>
+          <MetricFade
+            contentKey={`compact-hero-${metric}-${heroMainValue}-${ph ? 'ph' : okPanel ? panel.aqiCat.label : ''}`}
+          >
+            <Text style={styles.compactHeroLabel}>
+              {metricHeroLabel(metric, okPanel ? panel.isSensorReading : false)}
+            </Text>
+            <View style={styles.compactHeroValueRow}>
+              <Text style={[styles.compactHeroValue, { fontSize: heroValueSize }]}>{heroMainValue}</Text>
+              <Text style={styles.compactHeroUnit}>{metric === 'aqi' ? 'AQI' : 'µg/m³'}</Text>
+              <View style={styles.compactBadge}>
+                <Text style={styles.compactBadgeText} numberOfLines={1}>
+                  {ph ? 'No data' : metric === 'aqi' ? panel.aqiCat.label : panel.predPm25Category.label}
+                </Text>
+              </View>
             </View>
-          </View>
+          </MetricFade>
         </View>
       </LinearGradient>
 
-      {ph || okPanel ? (
-        <View style={styles.compactCardsRow}>
+      {ph || (okPanel && !panel.isSensorReading) ? (
+        <MetricFade
+          contentKey={`compact-cards-${metric}-${ph ? 'ph' : panel.closest?.pm25 ?? 'x'}`}
+          style={styles.compactCardsRow}
+        >
           <MiniCard
             k="Closest sensor"
             v={
@@ -1108,7 +757,7 @@ function CompactPanelBody({
             valueFontSize={cardValueSize}
             compact
           />
-        </View>
+        </MetricFade>
       ) : null}
     </>
   );
@@ -1210,46 +859,13 @@ const styles = StyleSheet.create({
   metricToggleDock: {
     alignSelf: 'flex-start',
     marginLeft: 16,
-    marginTop: -6,
-    marginBottom: 6,
+    marginTop: 4,
+    marginBottom: 8,
     zIndex: 20,
   },
-  metricToggle: {
-    flexDirection: 'row',
-    gap: 10,
-    padding: 6,
-    borderRadius: 999,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: 'rgba(15,23,42,0.12)',
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.08,
-    shadowRadius: 11,
-    elevation: 4,
-  },
-  metricPill: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(15,23,42,0.1)',
-    backgroundColor: '#fff',
-  },
-  metricPillActive: {
-    backgroundColor: 'rgba(15,23,42,0.92)',
-    borderColor: 'rgba(15,23,42,0.18)',
-  },
-  metricPillText: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.4,
-    color: '#0f172a',
-  },
-  metricPillTextActive: { color: 'rgba(255,255,255,0.96)' },
   eyebrow: {
     marginBottom: 6,
-    fontSize: 11,
+    fontSize: 40,
     fontWeight: '800',
     letterSpacing: 1.4,
     color: '#64748b',
@@ -1275,26 +891,6 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     borderWidth: 1,
     borderColor: 'rgba(15,23,42,0.07)',
-  },
-  heroHelpBtn: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    zIndex: 2,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.55)',
-    borderWidth: 1,
-    borderColor: 'rgba(15,23,42,0.12)',
-  },
-  heroHelpBtnMark: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#475569',
-    marginTop: -1,
   },
   heroShadow: {
     shadowOffset: { width: 0, height: 22 },
@@ -1394,7 +990,7 @@ const styles = StyleSheet.create({
   },
   sheetTitle: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 18,
     fontWeight: '800',
     color: '#0f172a',
     letterSpacing: -0.3,
@@ -1565,117 +1161,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#b91c1c',
   },
-  healthTooltipModalRoot: {
-    flex: 1,
-  },
-  healthTooltipWrap: {
-    position: 'absolute',
-    zIndex: 3,
-    overflow: 'visible',
-  },
-  healthTooltipArrowUp: {
-    position: 'absolute',
-    top: -7,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderBottomWidth: 7,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderBottomColor: 'rgba(255,255,255,0.98)',
-    zIndex: 2,
-  },
-  healthTooltipArrowDown: {
-    position: 'absolute',
-    bottom: -7,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderTopWidth: 7,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderTopColor: 'rgba(255,255,255,0.98)',
-    zIndex: 2,
-  },
-  healthTooltipCard: {
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    backgroundColor: 'rgba(255,255,255,0.98)',
-    borderWidth: 1,
-    borderColor: 'rgba(15,23,42,0.1)',
-    shadowColor: '#020617',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.18,
-    shadowRadius: 20,
-    elevation: 10,
-  },
-  healthTooltipTableRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  healthTooltipRowDivider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(15,23,42,0.12)',
-    marginVertical: 10,
-  },
-  healthTooltipSilentLeft: {
-    flex: 1,
-    minWidth: 0,
-  },
-  healthTooltipSilentRight: {
-    flexShrink: 0,
-    flexDirection: 'column',
-    alignItems: 'flex-end',
-    maxWidth: '46%',
-    gap: 2,
-  },
-  healthTooltipErrCi: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#64748b',
-    fontVariant: ['tabular-nums'],
-    textAlign: 'right',
-    marginTop: 2,
-  },
-  healthTooltipTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#0f172a',
-    marginBottom: 6,
-  },
-  healthTooltipSub: {
-    fontSize: 12,
-    fontWeight: '400',
-    color: '#64748b',
-    lineHeight: 17,
-  },
-  healthTooltipEmDash: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#94a3b8',
-  },
-  aqiStatsTdValueRed: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#dc2626',
-    fontVariant: ['tabular-nums'],
-  },
-  healthTooltipValueGreen: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#15803d',
-    fontVariant: ['tabular-nums'],
-  },
-  aqiStatsLinkInline: {
-    fontSize: 12,
-    fontWeight: '400',
-    color: '#2563eb',
-    textDecorationLine: 'underline',
-  },
   sheetBody: {
     paddingHorizontal: 12,
     paddingBottom: 8,
@@ -1691,17 +1176,23 @@ const styles = StyleSheet.create({
   },
   compactCoordsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 8,
     marginBottom: 6,
+    flexWrap: 'wrap',
   },
   compactToggleInHeader: { flexShrink: 0 },
   compactCoords: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
     fontSize: 10,
     fontWeight: '700',
     color: '#64748b',
     fontVariant: ['tabular-nums'],
+    flexWrap: 'wrap',
   },
   compactHeroGrad: {
     position: 'relative',
@@ -1716,26 +1207,6 @@ const styles = StyleSheet.create({
     gap: 8,
     flexWrap: 'wrap',
   },
-  heroHelpBtnCompact: {
-    position: 'absolute',
-    top: -2,
-    right: 0,
-    zIndex: 2,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.55)',
-    borderWidth: 1,
-    borderColor: 'rgba(15,23,42,0.1)',
-  },
-  heroHelpBtnMarkCompact: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#475569',
-    marginTop: -1,
-  },
   compactHeroShadow: {
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.2,
@@ -1743,7 +1214,6 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   compactHeroMain: { flex: 1, minWidth: 140, position: 'relative' },
-  compactHeroMainWithHelp: { paddingRight: 26 },
   compactHeroLabel: {
     fontSize: 8,
     fontWeight: '800',
@@ -1771,29 +1241,6 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
   },
   compactBadgeText: { fontSize: 10, fontWeight: '800', color: '#0f172a' },
-  metricToggleCompact: {
-    flexDirection: 'row',
-    gap: 4,
-    padding: 4,
-    borderRadius: 999,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: 'rgba(15,23,42,0.12)',
-  },
-  metricPillCompact: {
-    paddingVertical: 5,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(15,23,42,0.1)',
-    backgroundColor: '#fff',
-  },
-  metricPillTextCompact: {
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 0.8,
-    color: '#0f172a',
-  },
   compactCardsRow: { flexDirection: 'row', gap: 8, marginTop: 6, alignItems: 'stretch' },
   miniCompact: {
     flex: 1,
