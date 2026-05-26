@@ -25,16 +25,16 @@ export type ModelProjectionCopy = {
 export const modelProjectionCopy: Record<AppLanguage, ModelProjectionCopy> = {
   en: {
     experimentalBadge: 'Experimental',
-    title: 'PM₂.₅ Analog Forecast',
+    title: 'PM₂.₅ Scenario Projection',
     shortBlurb:
-      'Matches today’s PM₂.₅ pattern to similar past hours, then projects their +1h–+5h changes onto the map.',
+      'This model projects PM₂.₅ from now to +5h using a conservative blend of recent live trend, same-hour historical priors, and a small wind shift.',
     helpTitle: 'How this forecast works',
     helpPipeline: [
       'Research preview only—not an official air-quality forecast.',
-      'From ~7 days of sensors, the app stores past PM₂.₅ maps and how each changed at +1h through +5h.',
-      'For now, it finds the 12 closest past hours by PM₂.₅ layout and time-of-day, then blends those historical changes onto today’s map.',
-      'Large changes are capped; weak matches fall back to a recent 48-hour trend.',
-      'Forecast wind can shift the projected change field afterward (not used to pick analogs). Arrows show wind at the selected time.',
+      'From about 7 days of data, the app builds same-hour historical priors for +1h through +5h change.',
+      'For each future step, it blends a recent live PM₂.₅ trend with those historical priors.',
+      'When sample support is strong, it adds broad west/central/east structure from historical deltas; all changes are capped conservatively.',
+      'If forecast wind is available, the projected field receives a small post-blend wind shift. Arrows show wind at the selected time.',
     ],
     helpMatchesHeading: 'This run’s analog matches',
     helpMatchesLoading: 'Loads after the library is ready.',
@@ -61,16 +61,16 @@ export const modelProjectionCopy: Record<AppLanguage, ModelProjectionCopy> = {
   },
   es: {
     experimentalBadge: 'Experimental',
-    title: 'Pronóstico analógico de PM₂.₅',
+    title: 'Proyección de escenario de PM₂.₅',
     shortBlurb:
-      'Compara el patrón de PM₂.₅ de hoy con horas pasadas similares y proyecta sus cambios de +1h a +5h en el mapa.',
+      'Este modelo proyecta PM₂.₅ desde ahora hasta +5h con una mezcla conservadora de tendencia reciente en vivo, históricos de la misma hora y un pequeño ajuste por viento.',
     helpTitle: 'Cómo funciona este pronóstico',
     helpPipeline: [
       'Solo vista previa de investigación: no es un pronóstico oficial de calidad del aire.',
-      'Con ~7 días de sensores, la app guarda mapas pasados de PM₂.₅ y cómo cambió cada uno entre +1h y +5h.',
-      'Por ahora busca las 12 horas pasadas más parecidas por distribución de PM₂.₅ y hora del día, y mezcla esos cambios históricos sobre el mapa de hoy.',
-      'Los cambios grandes están limitados; si la coincidencia es débil, usa una tendencia reciente de 48 horas.',
-      'El viento previsto puede desplazar después el campo de cambio proyectado (no se usa para elegir análogos). Las flechas muestran el viento en el tiempo seleccionado.',
+      'Con cerca de 7 días de datos, la app construye históricos de la misma hora para el cambio entre +1h y +5h.',
+      'Para cada paso futuro, mezcla una tendencia reciente de PM₂.₅ en vivo con esos históricos.',
+      'Cuando hay suficiente muestra, agrega estructura amplia oeste/centro/este desde deltas históricos; todos los cambios se limitan de forma conservadora.',
+      'Si hay viento pronosticado disponible, el campo proyectado recibe un pequeño desplazamiento posterior por viento. Las flechas muestran el viento en el tiempo seleccionado.',
     ],
     helpMatchesHeading: 'Análogos de esta ejecución',
     helpMatchesLoading: 'Se carga cuando la biblioteca esté lista.',
