@@ -74,6 +74,9 @@ const MAX_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MAX_ZOOM_FACTOR;
 const ZOOM_STEP = 1;
 const PANEL_TOUCH_LOCK_MS = 300;
 const CALLOUT_CARD_WIDTH = 300;
+const CALLOUT_ARROW_HALF_WIDTH = 8;
+/** Arrow may slide along the panel edge but stays at least this far from the panel sides. */
+const CALLOUT_ARROW_EDGE_INSET = 20;
 const REMINDER_BELL_PATH =
   'M42.2174 32.922V21.7756C42.2174 20.4935 42.0235 19.2188 41.6423 17.9946C37.9321 6.07937 21.0679 6.07937 17.3577 17.9946C16.9765 19.2188 16.7826 20.4935 16.7826 21.7756V32.922C16.7826 34.01 16.3743 35.0585 15.6383 35.8599L11.5394 40.3236C10.9506 40.9648 11.4054 42 12.2759 42H46.7241C47.5946 42 48.0494 40.9648 47.4606 40.3236L43.3617 35.8599C42.6257 35.0585 42.2174 34.01 42.2174 32.922Z';
 
@@ -274,11 +277,17 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
     lastPanelTouchMsRef.current = Date.now();
   }, []);
 
-  const selectedCalloutAnchorX = useMemo(() => {
-    // Keep the visual callout and hitbox aligned near screen edges by shifting
-    // marker anchor instead of using card transform.
-    const anchorX = 0.5 - animatedShiftX / CALLOUT_CARD_WIDTH;
-    return Math.min(1, Math.max(0, anchorX));
+  const calloutLayout = useMemo(() => {
+    const panelShiftX = animatedShiftX;
+    const pinXInPanel = CALLOUT_CARD_WIDTH / 2 - panelShiftX;
+    const arrowMin = CALLOUT_ARROW_EDGE_INSET + CALLOUT_ARROW_HALF_WIDTH;
+    const arrowMax = CALLOUT_CARD_WIDTH - CALLOUT_ARROW_EDGE_INSET - CALLOUT_ARROW_HALF_WIDTH;
+    const arrowCenterX = Math.min(arrowMax, Math.max(arrowMin, pinXInPanel));
+    const anchorX = Math.min(0.95, Math.max(0.05, pinXInPanel / CALLOUT_CARD_WIDTH));
+    return {
+      anchorX,
+      arrowLeft: arrowCenterX - CALLOUT_ARROW_HALF_WIDTH,
+    };
   }, [animatedShiftX]);
 
   useImperativeHandle(
@@ -468,7 +477,10 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
           <Mapbox.MarkerView
             id="selected-callout"
             coordinate={[animatedSelected.longitude, animatedSelected.latitude]}
-            anchor={{ x: selectedCalloutAnchorX, y: animatedPlacement === 'above' ? 1 : 0 }}
+            anchor={{
+              x: calloutLayout.anchorX,
+              y: animatedPlacement === 'above' ? 1 : 0,
+            }}
           >
             <Animated.View
               style={[
@@ -479,7 +491,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
                   transform: [{ scale: calloutScale }],
                 },
               ]}
-              pointerEvents="auto"
+              pointerEvents="box-none"
               onStartShouldSetResponderCapture={() => {
                 markPanelTouch();
                 return false;
@@ -489,11 +501,40 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
                 return false;
               }}
             >
-              {animatedPlacement === 'below' ? <View style={styles.calloutArrowUp} /> : null}
-              <View style={styles.calloutCard}>
-                {animatedCallout}
+              {animatedPlacement === 'below' ? (
+                <View
+                  pointerEvents="none"
+                  style={[
+                    styles.calloutArrowUp,
+                    styles.calloutArrowPositioned,
+                    { left: calloutLayout.arrowLeft },
+                  ]}
+                />
+              ) : null}
+              <View
+                pointerEvents="auto"
+                style={styles.calloutCardShift}
+                onStartShouldSetResponderCapture={() => {
+                  markPanelTouch();
+                  return false;
+                }}
+                onMoveShouldSetResponderCapture={() => {
+                  markPanelTouch();
+                  return false;
+                }}
+              >
+                <View style={styles.calloutCard}>{animatedCallout}</View>
               </View>
-              {animatedPlacement === 'above' ? <View style={styles.calloutArrowDown} /> : null}
+              {animatedPlacement === 'above' ? (
+                <View
+                  pointerEvents="none"
+                  style={[
+                    styles.calloutArrowDown,
+                    styles.calloutArrowPositioned,
+                    { left: calloutLayout.arrowLeft },
+                  ]}
+                />
+              ) : null}
             </Animated.View>
           </Mapbox.MarkerView>
         ) : null}
@@ -534,13 +575,25 @@ const styles = StyleSheet.create({
     padding: 2,
   },
   calloutWrap: {
-    alignItems: 'center',
+    position: 'relative',
+    width: CALLOUT_CARD_WIDTH,
+    alignItems: 'stretch',
+    overflow: 'visible',
+  },
+  calloutCardShift: {
+    width: CALLOUT_CARD_WIDTH,
+  },
+  calloutArrowPositioned: {
+    position: 'absolute',
+    zIndex: 2,
   },
   calloutWrapAbove: {
     marginBottom: 18,
+    paddingBottom: 10,
   },
   calloutWrapBelow: {
     marginTop: 18,
+    paddingTop: 10,
   },
   calloutCard: {
     width: CALLOUT_CARD_WIDTH,
@@ -548,6 +601,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   calloutArrowDown: {
+    bottom: 0,
     marginTop: -1,
     width: 0,
     height: 0,
@@ -559,6 +613,7 @@ const styles = StyleSheet.create({
     borderTopColor: 'rgba(255,255,255,0.92)',
   },
   calloutArrowUp: {
+    top: 0,
     marginBottom: -1,
     width: 0,
     height: 0,

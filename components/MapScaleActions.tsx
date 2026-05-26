@@ -2,6 +2,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useAppLanguage } from '../contexts/LanguageProvider';
+import { mapScreenCopy } from '../lib/mapScreenCopy';
+
 export type MapScaleActionsProps = {
   onNotificationPress?: () => void;
   onModelingPress?: () => void;
@@ -20,6 +23,8 @@ export function MapScaleActions({
   canZoomIn = true,
   canZoomOut = true,
 }: MapScaleActionsProps) {
+  const { language } = useAppLanguage();
+  const copy = mapScreenCopy[language];
   const insets = useSafeAreaInsets();
   const showZoom = onZoomIn != null && onZoomOut != null;
   const showActions = onNotificationPress != null || onModelingPress != null || showZoom;
@@ -41,11 +46,11 @@ export function MapScaleActions({
           onPress={onNotificationPress}
           style={({ pressed }) => [styles.actionBtn, pressed && styles.actionBtnPressed]}
           accessibilityRole="button"
-          accessibilityLabel="Go to notification location and open settings"
+          accessibilityLabel={copy.mapAlertButtonA11y}
         >
           <Ionicons name="notifications-outline" size={16} color="#1f2937" />
           <Text style={styles.actionLabel} numberOfLines={1}>
-            Alert
+            {copy.mapAlertButton}
           </Text>
         </Pressable>
       ) : null}
@@ -73,7 +78,7 @@ export function MapScaleActions({
               pressed && canZoomIn && styles.zoomPillHalfPressed,
             ]}
             accessibilityRole="button"
-            accessibilityLabel="Zoom in map"
+            accessibilityLabel={copy.zoomInA11y}
           >
             <Ionicons name="add" size={16} color={canZoomIn ? '#1f2937' : '#94a3b8'} />
           </Pressable>
@@ -87,7 +92,7 @@ export function MapScaleActions({
               pressed && canZoomOut && styles.zoomPillHalfPressed,
             ]}
             accessibilityRole="button"
-            accessibilityLabel="Zoom out map"
+            accessibilityLabel={copy.zoomOutA11y}
           >
             <Ionicons name="remove" size={16} color={canZoomOut ? '#1f2937' : '#94a3b8'} />
           </Pressable>

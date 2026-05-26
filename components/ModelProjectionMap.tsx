@@ -5,7 +5,9 @@ import {
   BackHandler,
   InteractionManager,
   LayoutChangeEvent,
+  Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -46,6 +48,17 @@ import {
 import { ROOT_TAB_BAR_TOP_RADIUS } from '../lib/constants/appLayout';
 import { EXPECTED_GRID_CELLS, resolveHeatmapGridRows } from '../lib/resolveHeatmapGrid';
 import type { SensorPoint } from '../lib/sensorTypes';
+import {
+  MODEL_EXPERIMENTAL_BADGE,
+  MODEL_HELP_BTN_A11Y,
+  MODEL_HELP_CLOSE_A11Y,
+  MODEL_HELP_MATCHES_HEADING,
+  MODEL_HELP_MATCHES_LOADING,
+  MODEL_HELP_PIPELINE,
+  MODEL_HELP_TITLE,
+  MODEL_SHORT_BLURB,
+  MODEL_TITLE,
+} from '../lib/modelProjectionCopy';
 
 export type ModelProjectionMapProps = {
   visible: boolean;
@@ -69,9 +82,6 @@ const DEFAULT_ZOOM_LEVEL = 12;
 const MIN_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * 0.5;
 const MAX_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * 3;
 
-const MODEL_BLURB =
-  'Compares today’s pollution and wind to similar past days, then blends how those situations changed over the next few hours.';
-
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -92,7 +102,7 @@ export function ModelProjectionMap({
   const [windErrorMessage, setWindErrorMessage] = useState<string | null>(null);
   const [precomputedFrames, setPrecomputedFrames] = useState<ProjectionFrame[] | null>(null);
   const [analogQuality, setAnalogQuality] = useState<AnalogProjectionQuality | null>(null);
-  const [qualityPanelOpen, setQualityPanelOpen] = useState(false);
+  const [helpModalOpen, setHelpModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
   const [loadMessage, setLoadMessage] = useState('Preparing projection…');
@@ -136,7 +146,7 @@ export function ModelProjectionMap({
     setWindData(null);
     setPrecomputedFrames(null);
     setAnalogQuality(null);
-    setQualityPanelOpen(false);
+    setHelpModalOpen(false);
     setWindAvailable(false);
     setWindErrorMessage(null);
     setLoadProgress(0);
@@ -288,16 +298,32 @@ export function ModelProjectionMap({
       <View style={styles.root}>
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 8) + 4 }]}>
           <View style={styles.headerTextCol}>
-            <Text style={styles.title}>Historical analog PM₂.₅ projection</Text>
-            <Text style={styles.subtitle}>{MODEL_BLURB}</Text>
+            <View style={styles.titleRow}>
+              <View style={styles.experimentalBadge}>
+                <Text style={styles.experimentalBadgeText}>{MODEL_EXPERIMENTAL_BADGE}</Text>
+              </View>
+              <Text style={styles.title} numberOfLines={2}>
+                {MODEL_TITLE}
+              </Text>
+              <Pressable
+                onPress={() => setHelpModalOpen(true)}
+                hitSlop={10}
+                style={({ pressed }) => [styles.helpBtn, pressed && styles.helpBtnPressed]}
+                accessibilityRole="button"
+                accessibilityLabel={MODEL_HELP_BTN_A11Y}
+              >
+                <Ionicons name="help-circle-outline" size={22} color="#475569" />
+              </Pressable>
+            </View>
+            <Text style={styles.subtitle}>{MODEL_SHORT_BLURB}</Text>
             {!loading && analogQuality ? (
               <Text style={styles.meta}>
-                {analogQuality.librarySampleCount} usable analog
-                {analogQuality.librarySampleCount === 1 ? '' : 's'}
+                {analogQuality.topKCount} matches from {analogQuality.librarySampleCount} library
+                samples
                 {analogQuality.meanTopKDistance != null
-                  ? ` · avg match ${analogQuality.meanTopKDistance.toFixed(0)}`
+                  ? ` · avg distance ${analogQuality.meanTopKDistance.toFixed(0)}`
                   : ''}
-                {analogQuality.usedWeakFallback ? ' · trend blend' : ''}
+                {analogQuality.usedWeakFallback ? ' · includes recent-trend blend' : ''}
               </Text>
             ) : null}
           </View>
@@ -338,75 +364,6 @@ export function ModelProjectionMap({
               {Math.round(analogQuality.weakFallbackWeight * 100)}%).
             </Text>
           </View>
-        ) : null}
-
-        {heatmapAvailable && !loading && analogQuality ? (
-          <Pressable
-            onPress={() => setQualityPanelOpen((o) => !o)}
-            style={({ pressed }) => [styles.qualityPanelToggle, pressed && styles.qualityPanelTogglePressed]}
-            accessibilityRole="button"
-            accessibilityState={{ expanded: qualityPanelOpen }}
-            accessibilityLabel="Analog match quality details"
-          >
-            <View style={styles.qualityPanelToggleRow}>
-              <Ionicons
-                name={qualityPanelOpen ? 'chevron-up' : 'chevron-down'}
-                size={16}
-                color="#475569"
-              />
-              <Text style={styles.qualityPanelToggleText}>Analog quality</Text>
-              {uncertainty > 0.12 ? (
-                <Text style={styles.qualityUncertaintyBadge}>
-                  {Math.round(uncertainty * 100)}% uncertain
-                </Text>
-              ) : null}
-            </View>
-            {qualityPanelOpen ? (
-              <View style={styles.qualityPanelBody}>
-                <Text style={styles.qualityLine}>
-                  Library: {analogQuality.librarySampleCount} samples
-                  {analogQuality.librarySampleCount < MIN_USABLE_ANALOG_LIBRARY
-                    ? ` (below ${MIN_USABLE_ANALOG_LIBRARY})`
-                    : ''}
-                </Text>
-                <Text style={styles.qualityLine}>
-                  Top-{analogQuality.topKCount} match
-                  {analogQuality.meanTopKDistance != null
-                    ? ` · avg distance ${analogQuality.meanTopKDistance.toFixed(1)}`
-                    : ''}
-                  {analogQuality.bestTopKDistance != null
-                    ? ` · best ${analogQuality.bestTopKDistance.toFixed(1)}`
-                    : ''}
-                </Text>
-                <Text style={styles.qualityLine}>
-                  Weak fallback weight: {(analogQuality.weakFallbackWeight * 100).toFixed(0)}%
-                </Text>
-                <Text style={styles.qualitySectionLabel}>Top analog timestamps</Text>
-                {analogQuality.topAnalogTimestamps.length === 0 ? (
-                  <Text style={styles.qualityMuted}>None</Text>
-                ) : (
-                  analogQuality.topAnalogTimestamps.map((iso) => (
-                    <Text key={iso} style={styles.qualityMuted}>
-                      {formatAnalogTimestamp(iso)}
-                    </Text>
-                  ))
-                )}
-                <Text style={styles.qualitySectionLabel}>Future deltas (library / top-K)</Text>
-                {Array.from({ length: PROJECTION_FUTURE_STEPS }, (_, i) => {
-                  const libN = analogQuality.horizonLibraryValidCounts[i] ?? 0;
-                  const topN = analogQuality.horizonTopKValidCounts[i] ?? 0;
-                  const enoughLib = libN >= MIN_USABLE_ANALOG_LIBRARY;
-                  const enoughTop = topN >= Math.max(3, Math.floor(analogQuality.topKCount * 0.5));
-                  return (
-                    <Text key={`horizon-${i}`} style={styles.qualityLine}>
-                      {horizonLabelForStepIndex(i + 1)}: {libN} library / {topN} top-K
-                      {enoughLib && enoughTop ? ' ✓' : ' · thin'}
-                    </Text>
-                  );
-                })}
-              </View>
-            ) : null}
-          </Pressable>
         ) : null}
 
         <View style={styles.mapBody} onLayout={handleMapWrapLayout}>
@@ -462,7 +419,7 @@ export function ModelProjectionMap({
           ) : null}
         </View>
 
-        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
           <View style={styles.stepNavRow}>
             <Pressable
               onPress={stepBack}
@@ -477,7 +434,7 @@ export function ModelProjectionMap({
             >
               <Ionicons
                 name="chevron-back"
-                size={18}
+                size={20}
                 color={!stepNavEnabled || selectedStep <= 0 ? '#94a3b8' : '#334155'}
               />
               <Text
@@ -516,7 +473,7 @@ export function ModelProjectionMap({
               </Text>
               <Ionicons
                 name="chevron-forward"
-                size={18}
+                size={20}
                 color={
                   !stepNavEnabled || selectedStep >= maxSelectableStep ? '#94a3b8' : '#334155'
                 }
@@ -556,6 +513,102 @@ export function ModelProjectionMap({
           </View>
         </View>
       </View>
+
+      <Modal
+        visible={helpModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setHelpModalOpen(false)}
+      >
+        <View style={styles.helpModalRoot}>
+          <Pressable
+            style={styles.helpModalBackdrop}
+            onPress={() => setHelpModalOpen(false)}
+            accessibilityRole="button"
+            accessibilityLabel={MODEL_HELP_CLOSE_A11Y}
+          />
+          <View style={styles.helpModalCard}>
+            <View style={styles.helpModalHeader}>
+              <Text style={styles.helpModalTitle}>{MODEL_HELP_TITLE}</Text>
+              <Pressable
+                onPress={() => setHelpModalOpen(false)}
+                hitSlop={12}
+                style={({ pressed }) => [styles.helpModalCloseBtn, pressed && styles.helpBtnPressed]}
+                accessibilityRole="button"
+                accessibilityLabel={MODEL_HELP_CLOSE_A11Y}
+              >
+                <Ionicons name="close" size={22} color="#334155" />
+              </Pressable>
+            </View>
+            <ScrollView
+              style={styles.helpModalScroll}
+              contentContainerStyle={styles.helpModalScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+            >
+              {MODEL_HELP_PIPELINE.map((paragraph) => (
+                <Text key={paragraph.slice(0, 48)} style={styles.helpParagraph}>
+                  {paragraph}
+                </Text>
+              ))}
+              <Text style={styles.helpSectionLabel}>{MODEL_HELP_MATCHES_HEADING}</Text>
+              {loading || !analogQuality ? (
+                <Text style={styles.helpMuted}>{MODEL_HELP_MATCHES_LOADING}</Text>
+              ) : (
+                <ModelProjectionMatchDetails quality={analogQuality} />
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+function ModelProjectionMatchDetails({ quality }: { quality: AnalogProjectionQuality }) {
+  return (
+    <View style={styles.helpMatchBlock}>
+      <Text style={styles.helpLine}>
+        Library: {quality.librarySampleCount} anchor samples
+        {quality.librarySampleCount < MIN_USABLE_ANALOG_LIBRARY
+          ? ` (below ${MIN_USABLE_ANALOG_LIBRARY} recommended minimum)`
+          : ''}
+      </Text>
+      <Text style={styles.helpLine}>
+        Top-{quality.topKCount} used for blending
+        {quality.meanTopKDistance != null
+          ? ` · avg distance ${quality.meanTopKDistance.toFixed(1)}`
+          : ''}
+        {quality.bestTopKDistance != null ? ` · best ${quality.bestTopKDistance.toFixed(1)}` : ''}
+      </Text>
+      <Text style={styles.helpLine}>
+        Recent-trend fallback weight: {(quality.weakFallbackWeight * 100).toFixed(0)}%
+        {quality.usedWeakFallback ? ' (active)' : ''}
+      </Text>
+      <Text style={styles.helpSubsectionLabel}>Ranked analogs (lower distance = closer match)</Text>
+      {quality.topAnalogMatches.length === 0 ? (
+        <Text style={styles.helpMuted}>No matches in library.</Text>
+      ) : (
+        quality.topAnalogMatches.map((match, index) => (
+          <Text key={`${match.time}-${index}`} style={styles.helpMatchRow}>
+            {index + 1}. {formatAnalogTimestamp(match.time)} · distance{' '}
+            {match.distance.toFixed(1)} · weight {(match.weight * 100).toFixed(1)}%
+          </Text>
+        ))
+      )}
+      <Text style={styles.helpSubsectionLabel}>Future change data available</Text>
+      {Array.from({ length: PROJECTION_FUTURE_STEPS }, (_, i) => {
+        const libN = quality.horizonLibraryValidCounts[i] ?? 0;
+        const topN = quality.horizonTopKValidCounts[i] ?? 0;
+        const enoughLib = libN >= MIN_USABLE_ANALOG_LIBRARY;
+        const enoughTop = topN >= Math.max(3, Math.floor(quality.topKCount * 0.5));
+        return (
+          <Text key={`horizon-${i}`} style={styles.helpLine}>
+            {horizonLabelForStepIndex(i + 1)}: {libN} in full library / {topN} in top matches
+            {enoughLib && enoughTop ? ' · sufficient' : ' · thin coverage'}
+          </Text>
+        );
+      })}
     </View>
   );
 }
@@ -588,11 +641,45 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 4,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  experimentalBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: '#fef3c7',
+    borderWidth: 1,
+    borderColor: '#fcd34d',
+  },
+  experimentalBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#92400e',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
   title: {
+    flex: 1,
+    minWidth: 120,
     fontSize: 15,
     fontWeight: '800',
     color: '#0f172a',
     letterSpacing: 0.1,
+  },
+  helpBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e2e8f0',
+  },
+  helpBtnPressed: {
+    opacity: 0.85,
   },
   subtitle: {
     fontSize: 12,
@@ -606,56 +693,102 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontWeight: '600',
   },
-  qualityPanelToggle: {
-    marginHorizontal: 14,
-    marginBottom: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 10,
+  helpModalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  helpModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  helpModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    maxHeight: '82%',
+    borderRadius: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#cbd5e1',
+    shadowColor: '#020617',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 12,
+    zIndex: 2,
   },
-  qualityPanelTogglePressed: {
-    opacity: 0.9,
-  },
-  qualityPanelToggleRow: {
+  helpModalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    gap: 8,
   },
-  qualityPanelToggleText: {
+  helpModalTitle: {
     flex: 1,
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  helpModalCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f1f5f9',
+  },
+  helpModalScroll: {
+    flexGrow: 0,
+  },
+  helpModalScrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 10,
+  },
+  helpParagraph: {
+    fontSize: 13,
+    lineHeight: 19,
     color: '#334155',
+    fontWeight: '500',
   },
-  qualityUncertaintyBadge: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#1e40af',
-  },
-  qualityPanelBody: {
-    marginTop: 10,
-    gap: 4,
-  },
-  qualitySectionLabel: {
+  helpSectionLabel: {
     marginTop: 6,
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0f172a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.35,
+  },
+  helpSubsectionLabel: {
+    marginTop: 4,
     fontSize: 11,
     fontWeight: '800',
     color: '#475569',
     textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.35,
   },
-  qualityLine: {
-    fontSize: 11,
-    lineHeight: 16,
+  helpMatchBlock: {
+    gap: 4,
+  },
+  helpLine: {
+    fontSize: 12,
+    lineHeight: 17,
     color: '#334155',
     fontWeight: '500',
   },
-  qualityMuted: {
+  helpMatchRow: {
     fontSize: 11,
     lineHeight: 16,
+    color: '#475569',
+    fontWeight: '500',
+  },
+  helpMuted: {
+    fontSize: 12,
+    lineHeight: 17,
     color: '#64748b',
     fontWeight: '500',
   },
@@ -758,25 +891,28 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     zIndex: 2,
     elevation: 2,
-    paddingHorizontal: 14,
-    paddingTop: 12,
+    paddingLeft: 44,
+    paddingRight: 14,
+    paddingTop: 10,
     backgroundColor: '#f8fafc',
     borderTopWidth: 1,
     borderTopColor: '#dbe5f2',
-    gap: 10,
+    gap: 8,
   },
   stepNavRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 6,
   },
   stepNavBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
-    minHeight: 40,
-    paddingHorizontal: 10,
+    justifyContent: 'center',
+    gap: 4,
+    minWidth: 84,
+    minHeight: 32,
+    paddingHorizontal: 14,
     borderRadius: 10,
     backgroundColor: '#fff',
     borderWidth: 1,
@@ -790,7 +926,7 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   stepNavBtnText: {
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '800',
     color: '#334155',
   },
@@ -800,20 +936,24 @@ const styles = StyleSheet.create({
   stepNavCenter: {
     flex: 1,
     textAlign: 'center',
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '800',
     color: '#1e40af',
   },
   tickRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
   },
   tickBtn: {
-    paddingHorizontal: 2,
+    paddingHorizontal: 6,
     paddingVertical: 4,
-    borderRadius: 8,
+    borderRadius: 6,
     minWidth: 28,
+    minHeight: 22,
     alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12
   },
   tickBtnActive: {
     backgroundColor: '#e2e8f0',
@@ -825,7 +965,7 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
   tickLabel: {
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: '700',
     color: '#64748b',
   },

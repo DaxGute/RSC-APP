@@ -18,6 +18,8 @@ import {
   buildYearlyPm25ByMonthChart,
   filterDailyPm25RowsForYear,
 } from '../lib/yearlyPm25ByMonth';
+import { useAppLanguage } from '../contexts/LanguageProvider';
+import { aqiGraphCopy } from '../lib/aqiGraphContent';
 import { AqiColoredCalendar } from './AqiColoredCalendar';
 
 const GRAPH_HISTORY_WEEKS = 12;
@@ -59,6 +61,8 @@ export function AqiGraphScreen({
   liveAverageAqi,
   loading,
 }: AqiGraphScreenProps) {
+  const { language } = useAppLanguage();
+  const copy = aqiGraphCopy[language];
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyPoints, setHistoryPoints] = useState<Array<{ time: string; avgAqi: number }>>([]);
   const [yearlyPm25Loading, setYearlyPm25Loading] = useState(true);
@@ -216,20 +220,18 @@ export function AqiGraphScreen({
   return (
     <View style={styles.screenRoot}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>AQI trends</Text>
+        <Text style={styles.title}>{copy.title}</Text>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Rolling 7-day average</Text>
-          <Text style={styles.sectionSub}>
-            Each bar is the average AQI for that hour across all readings in the last 7 days.
-          </Text>
+          <Text style={styles.sectionTitle}>{copy.rollingSectionTitle}</Text>
+          <Text style={styles.sectionSub}>{copy.rollingSectionSub}</Text>
           {historyLoading || loading ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator size="small" color="#475569" />
-              <Text style={styles.loadingText}>Loading sensor history…</Text>
+              <Text style={styles.loadingText}>{copy.loadingSensorHistory}</Text>
             </View>
           ) : !rollingWeekHasData ? (
-            <Text style={styles.emptyText}>No 7-day averages yet.</Text>
+            <Text style={styles.emptyText}>{copy.noRollingAverages}</Text>
           ) : (
             <View style={styles.rollingHourChart}>
               <View style={styles.rollingHourBarsArea} onLayout={handleRollingHourChartLayout}>
@@ -260,8 +262,8 @@ export function AqiGraphScreen({
                     >
                       <Text style={styles.rollingHourPeakLabelText}>
                         {rollingWeekPeakAvg == null
-                          ? 'Peak Avg'
-                          : `Peak Avg ${Math.round(rollingWeekPeakAvg)}`}
+                          ? copy.peakAvgShort
+                          : copy.peakAvgWithValue(Math.round(rollingWeekPeakAvg))}
                       </Text>
                     </View>
                   </>
@@ -309,8 +311,8 @@ export function AqiGraphScreen({
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>AQI calendar</Text>
-          <Text style={styles.sectionSub}>Daily colors from recorded sensor averages</Text>
+          <Text style={styles.sectionTitle}>{copy.calendarSectionTitle}</Text>
+          <Text style={styles.sectionSub}>{copy.calendarSectionSub}</Text>
           <AqiColoredCalendar
             timelineTimesAsc={timelineTimesAsc}
             timelineIndex={timelineIndex}
@@ -320,18 +322,19 @@ export function AqiGraphScreen({
           />
           <View style={styles.monthBreakdown}>
             {monthCategoryTotal === 0 ? (
-              <Text style={styles.emptyText}>No daily averages recorded this month.</Text>
+              <Text style={styles.emptyText}>{copy.noDailyAveragesMonth}</Text>
             ) : (
               <View style={styles.categoryLegend}>
                 {(['good', 'moderate', 'usg', 'unhealthy'] as DayAqiCategory[]).map((key) => {
                   const count = monthCategoryCounts[key];
                   if (count === 0) return null;
                   const meta = DAY_AQI_CATEGORY_META[key];
+                  const dayWord = count === 1 ? copy.daySingular : copy.daysPlural;
                   return (
                     <View key={key} style={styles.categoryLegendRow}>
                       <View style={[styles.categorySwatch, { backgroundColor: meta.bg }]} />
                       <Text style={styles.categoryLegendLabel}>
-                        {meta.label}: {count} {count === 1 ? 'day' : 'days'}
+                        {copy.categoryLabels[key]}: {count} {dayWord}
                       </Text>
                     </View>
                   );
@@ -342,18 +345,17 @@ export function AqiGraphScreen({
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Yearly PM2.5 average by month</Text>
+          <Text style={styles.sectionTitle}>{copy.yearlySectionTitle}</Text>
           <Text style={styles.sectionSub}>
-            Daily PM2.5 averaged within each month (Jan–Dec {currentYear}). Months not yet reached use{' '}
-            {currentYear - 1} daily averages.
+            {copy.yearlySectionSub(currentYear, currentYear - 1)}
           </Text>
           {yearlyPm25Loading ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator size="small" color="#475569" />
-              <Text style={styles.loadingText}>Loading daily PM2.5…</Text>
+              <Text style={styles.loadingText}>{copy.loadingDailyPm25}</Text>
             </View>
           ) : !yearlyPm25HasData ? (
-            <Text style={styles.emptyText}>No daily PM2.5 averages yet.</Text>
+            <Text style={styles.emptyText}>{copy.noDailyPm25}</Text>
           ) : (
             <View style={styles.yearlyPm25Chart}>
               <View style={styles.yearlyPm25BarsArea} onLayout={handleYearlyPm25ChartLayout}>
@@ -382,7 +384,7 @@ export function AqiGraphScreen({
                       ]}
                       pointerEvents="none"
                     >
-                      <Text style={styles.yearlyPm25PriorYearLabelText}>Previous Year</Text>
+                      <Text style={styles.yearlyPm25PriorYearLabelText}>{copy.previousYear}</Text>
                     </View>
                   </>
                 ) : null}
@@ -413,7 +415,7 @@ export function AqiGraphScreen({
                 {yearlyPm25Chart.bars.map((bar) => (
                   <View key={bar.label} style={styles.yearlyPm25LabelWrap}>
                     <Text style={styles.yearlyPm25Label} numberOfLines={1}>
-                      {bar.label}
+                      {copy.monthLabels[bar.monthIndex] ?? bar.label}
                     </Text>
                   </View>
                 ))}

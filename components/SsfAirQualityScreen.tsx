@@ -33,6 +33,14 @@ import { SsfMap, type SsfMapHandle } from './SsfMap';
 import { TimeRangeModule } from './TimeRangeModule';
 import { ModelProjectionMap } from './ModelProjectionMap';
 import { TimelineCalendarModal } from './TimelineCalendarModal';
+import { useAppLanguage } from '../contexts/LanguageProvider';
+import {
+  displayDayFilterLabel,
+  displayMonthFilterLabel,
+  formatMapScrubMonthDate,
+  mapScreenCopy,
+  monthAbbrForChart,
+} from '../lib/mapScreenCopy';
 
 const FILTER_MIN_YEAR = 2021;
 const BOTTOM_TAB_BAR_RESERVE = 6;
@@ -97,6 +105,34 @@ function dayOffsetFromRelativeLabel(label: string): number | null {
   if (!m) return null;
   const n = Number.parseInt(m[1], 10);
   return Number.isFinite(n) ? n : null;
+}
+
+function latestSelectableTimeFromChartPoints(
+  points: Array<{ selectableTime: string | null }>,
+): string | null {
+  let latest: string | null = null;
+  let latestMs = -Infinity;
+  for (const p of points) {
+    const t = p.selectableTime;
+    if (!t) continue;
+    const ms = new Date(t).getTime();
+    if (!Number.isFinite(ms) || ms <= latestMs) continue;
+    latestMs = ms;
+    latest = t;
+  }
+  return latest;
+}
+
+function latestRecordedTimeFromTimeseries(series: Array<{ time: string }>): string | null {
+  let latest: string | null = null;
+  let latestMs = -Infinity;
+  for (const p of series) {
+    const ms = new Date(p.time).getTime();
+    if (!Number.isFinite(ms) || ms <= latestMs) continue;
+    latestMs = ms;
+    latest = p.time;
+  }
+  return latest;
 }
 
 function localDayBoundsForOffset(daysAgo: number): { startIso: string; endIso: string; dayKey: string } {
@@ -320,6 +356,8 @@ export function SsfAirQualityScreen({
   liveAverageAqi,
   averageAqiTimeseries,
 }: SsfAirQualityScreenProps) {
+  const { language } = useAppLanguage();
+  const copy = mapScreenCopy[language];
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const alertSelectionTopDimHeight = windowHeight * 0.05;
@@ -875,13 +913,16 @@ export function SsfAirQualityScreen({
           selectedDayKey == null
             ? null
             : points.find((p) => dateKeyLocal(new Date(p.time)) === selectedDayKey)?.position ?? null;
-        const buildTickLabel = (index: number, suffix: '1st' | '15th') => {
+        const buildTickLabel = (index: number, kind: 'first' | 'fifteenth') => {
           const d = new Date(points[index].time);
-          return `${MONTH_LABELS[d.getMonth()]} ${suffix}`;
+          const abbr = monthAbbrForChart(d.getMonth(), language);
+          return kind === 'first' ? copy.monthTickFirst(abbr) : copy.monthTickFifteenth(abbr);
         };
         const ticks = [
-          firstIdx >= 0 ? { position: points[firstIdx].position, label: buildTickLabel(firstIdx, '1st') } : null,
-          fifteenthIdx >= 0 ? { position: points[fifteenthIdx].position, label: buildTickLabel(fifteenthIdx, '15th') } : null,
+          firstIdx >= 0 ? { position: points[firstIdx].position, label: buildTickLabel(firstIdx, 'first') } : null,
+          fifteenthIdx >= 0
+            ? { position: points[fifteenthIdx].position, label: buildTickLabel(fifteenthIdx, 'fifteenth') }
+            : null,
         ].filter((tick): tick is { position: number; label: string } => tick != null);
 
         return {
@@ -952,12 +993,14 @@ export function SsfAirQualityScreen({
     timelineIndex,
     timelineTimesAsc,
     timeFilterMode,
+    copy,
+    language,
   ]);
 
   const timeFilterButtonLabel = useMemo(() => {
-    if (timeFilterMode === 'Day') return selectedDayLabel;
-    return selectedMonthLabel;
-  }, [selectedDayLabel, selectedMonthLabel, timeFilterMode]);
+    if (timeFilterMode === 'Day') return displayDayFilterLabel(selectedDayLabel, copy);
+    return displayMonthFilterLabel(selectedMonthLabel, language, copy);
+  }, [copy, language, selectedDayLabel, selectedMonthLabel, timeFilterMode]);
   const scrubMarkerLabel = useMemo(() => {
     // Prefer the no-data bucket while one is pinned so the marker reflects
     // exactly where the user landed.
@@ -966,10 +1009,10 @@ export function SsfAirQualityScreen({
     const selectedDate = new Date(iso);
     if (!Number.isFinite(selectedDate.getTime())) return null;
     if (timeFilterMode === 'Day') {
-      return selectedDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      return selectedDate.toLocaleTimeString(copy.localeTag, { hour: 'numeric', minute: '2-digit' });
     }
-    return selectedDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: '2-digit' });
-  }, [pendingNoDataBucketTime, selectedTimeIsoForUi, timeFilterMode]);
+    return formatMapScrubMonthDate(selectedDate, language, copy.localeTag);
+  }, [copy.localeTag, language, pendingNoDataBucketTime, selectedTimeIsoForUi, timeFilterMode]);
 
   const effectiveSelectedPosition = useMemo(() => {
     if (pendingNoDataBucketTime != null) {
@@ -1016,41 +1059,55 @@ export function SsfAirQualityScreen({
   }, [selected, showInsufficientOverlay]);
 
   const lastAppliedSwitchKeyRef = useRef<string | null>(null);
+  const lastFilterSwitchKeyRef = useRef<string | null>(null);
   useEffect(() => {
     const switchKey = `${timeFilterMode}:${
       timeFilterMode === 'Month' ? selectedMonthLabel : timeFilterMode === 'Day' ? selectedDayLabel : ''
     }`;
-    if (lastAppliedSwitchKeyRef.current === switchKey) return;
-    lastAppliedSwitchKeyRef.current = switchKey;
-    // Switching filters invalidates any bucket the user had landed on.
-    setPendingNoDataBucketTime(null);
-
-    if (timeFilterMode === 'Day' && selectedDayLabel !== 'Today') {
-      return;
+    if (lastFilterSwitchKeyRef.current !== switchKey) {
+      lastFilterSwitchKeyRef.current = switchKey;
+      // Switching filters invalidates any bucket the user had landed on.
+      setPendingNoDataBucketTime(null);
     }
 
     if (timeFilterMode === 'Day' && selectedDayLabel === 'Today') {
-      if (timelineTimesAsc.length > 0) {
-        const latestTimelineIso = [...timelineTimesAsc]
-          .filter((iso) => Number.isFinite(new Date(iso).getTime()))
-          .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
-          .at(-1);
-        if (latestTimelineIso) {
-          const latestSourceIndex = timelineTimesAsc.findIndex((iso) => iso === latestTimelineIso);
-          if (latestSourceIndex >= 0) onTimelineIndexChange(latestSourceIndex);
-        }
-      }
+      if (timelineTimesAsc.length === 0) return;
+      const latestTimelineIso = [...timelineTimesAsc]
+        .filter((iso) => Number.isFinite(new Date(iso).getTime()))
+        .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
+        .at(-1);
+      if (!latestTimelineIso) return;
+      const appliedKey = `${switchKey}::${latestTimelineIso}`;
+      if (lastAppliedSwitchKeyRef.current === appliedKey) return;
+      lastAppliedSwitchKeyRef.current = appliedKey;
+      const latestSourceIndex = timelineTimesAsc.findIndex((iso) => iso === latestTimelineIso);
+      if (latestSourceIndex >= 0) onTimelineIndexChange(latestSourceIndex);
       return;
     }
 
-    const topSelectableTime = [...chartData.points]
-      .sort((a, b) => a.position - b.position)
-      .find((p) => p.selectableTime)?.selectableTime;
-    if (topSelectableTime) onSelectRecordedTime(topSelectableTime);
+    if (timeFilterMode === 'Day' && selectedDayLabel !== 'Today') {
+      if (dayPastRowsLoading) return;
+      const latest = latestRecordedTimeFromTimeseries(pastDayAverageAqiTimeseries);
+      if (!latest) return;
+      const appliedKey = `${switchKey}::${latest}`;
+      if (lastAppliedSwitchKeyRef.current === appliedKey) return;
+      lastAppliedSwitchKeyRef.current = appliedKey;
+      onSelectRecordedTime(latest);
+      return;
+    }
+
+    const latestSelectableTime = latestSelectableTimeFromChartPoints(chartData.points);
+    if (!latestSelectableTime) return;
+    const appliedKey = `${switchKey}::${latestSelectableTime}`;
+    if (lastAppliedSwitchKeyRef.current === appliedKey) return;
+    lastAppliedSwitchKeyRef.current = appliedKey;
+    onSelectRecordedTime(latestSelectableTime);
   }, [
     chartData.points,
+    dayPastRowsLoading,
     onSelectRecordedTime,
     onTimelineIndexChange,
+    pastDayAverageAqiTimeseries,
     selectedDayLabel,
     selectedMonthLabel,
     timeFilterMode,
@@ -1137,10 +1194,7 @@ export function SsfAirQualityScreen({
                       try {
                         await setReminder(selected.lat, selected.lon, categoryIndex, cooldownMinutes);
                       } catch {
-                        Alert.alert(
-                          'Check your connection',
-                          'We could not save your reminder. Check your connection.',
-                        );
+                        Alert.alert(copy.connectionAlertTitle, copy.connectionAlertReminderBody);
                       }
                     }}
                     onReminderCooldownChange={async (cooldownMinutes) => {
@@ -1153,10 +1207,7 @@ export function SsfAirQualityScreen({
                           cooldownMinutes,
                         );
                       } catch {
-                        Alert.alert(
-                          'Check your connection',
-                          'We could not save your reminder. Check your connection.',
-                        );
+                        Alert.alert(copy.connectionAlertTitle, copy.connectionAlertReminderBody);
                       }
                     }}
                     onReminderClear={clearReminder}
@@ -1183,8 +1234,8 @@ export function SsfAirQualityScreen({
                   <View style={styles.insufficientIconWrap}>
                     <Ionicons name="cloud-offline-outline" size={22} color="#475569" />
                   </View>
-                  <Text style={styles.insufficientTitle}>Insufficient Data</Text>
-                  <Text style={styles.insufficientSubtitle}>No sensor readings for this time.</Text>
+                  <Text style={styles.insufficientTitle}>{copy.insufficientDataTitle}</Text>
+                  <Text style={styles.insufficientSubtitle}>{copy.insufficientDataSubtitle}</Text>
                 </View>
               </View>
             ) : null}
@@ -1224,7 +1275,7 @@ export function SsfAirQualityScreen({
               }}
               style={({ pressed }) => [styles.calendarButton, pressed && styles.calendarButtonPressed]}
               accessibilityRole="button"
-              accessibilityLabel="Open time filter menu"
+              accessibilityLabel={copy.openTimeFilterMenu}
             >
               <Ionicons name="calendar-outline" size={18} color="#1f2937" />
               <Text style={styles.calendarButtonText} numberOfLines={1}>
@@ -1291,7 +1342,9 @@ export function SsfAirQualityScreen({
                       pressed && styles.dropdownItemPressed,
                     ]}
                   >
-                    <Text style={styles.dropdownItemText}>{option}</Text>
+                    <Text style={styles.dropdownItemText}>
+                      {option === 'Day' ? copy.timeFilterDay : copy.timeFilterMonth}
+                    </Text>
                     {option === 'Day' || option === 'Month' ? (
                       <Ionicons name="chevron-back" size={14} color="#475569" />
                     ) : null}
@@ -1386,7 +1439,7 @@ export function SsfAirQualityScreen({
                             pressed && styles.dropdownItemPressed,
                           ]}
                         >
-                          <Text style={styles.dropdownItemText}>{day}</Text>
+                          <Text style={styles.dropdownItemText}>{displayDayFilterLabel(day, copy)}</Text>
                         </Pressable>
                       ))}
                     </ScrollView>
@@ -1443,7 +1496,9 @@ export function SsfAirQualityScreen({
                             pressed && styles.dropdownItemPressed,
                           ]}
                         >
-                          <Text style={styles.dropdownItemText}>{month}</Text>
+                          <Text style={styles.dropdownItemText}>
+                            {displayMonthFilterLabel(month, language, copy)}
+                          </Text>
                         </Pressable>
                       ))}
                     </ScrollView>
@@ -1457,7 +1512,7 @@ export function SsfAirQualityScreen({
             style={[
               styles.timeOfDayWrap,
               {
-                left: 8,
+                left: 28,
                 right: Math.max(insets.right + 8, 8),
                 bottom: BOTTOM_TAB_BAR_RESERVE,
               },
@@ -1476,10 +1531,10 @@ export function SsfAirQualityScreen({
               topLabel={
                 timeFilterMode === 'Month'
                   ? selectedMonthLabel === 'This Month'
-                    ? 'yesterday'
+                    ? copy.timelineYesterday
                     : null
                   : timeFilterMode === 'Day' && selectedDayLabel === 'Today'
-                    ? 'now'
+                    ? copy.timelineNow
                     : null
               }
               graphOnly

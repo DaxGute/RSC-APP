@@ -1,6 +1,7 @@
 import type { CurrentKrigingRow } from './database.types';
 import { haversineKm } from './geoUtils';
-import { rowsToPm25Grid2D, sampleBilinearGrid } from './modeling/gridMath';
+import { rowsToPm25Grid2D, samplePm25AtLonLat } from './modeling/gridMath';
+import { maybeLogPm25TapNearBreakpoint } from './pm25TapSamplingDebug';
 import { resolveHeatmapGridRows } from './resolveHeatmapGrid';
 import type { SensorPoint } from './sensorTypes';
 import { pm25BreakpointCategory, type Pm25Category } from './aqiUtils';
@@ -33,9 +34,11 @@ export function computeSsfSelection(
   // Sample the same continuous PM2.5 surface used by the rendered overlay.
   const sharedRows = resolveHeatmapGridRows({ kriging, sensors });
   const sharedGrid = rowsToPm25Grid2D(sharedRows);
-  const predPm25: number | null = sharedGrid
-    ? sampleBilinearGrid(sharedGrid.values, lat0, lon0, sharedGrid)
-    : null;
+  const predPm25: number | null = sharedGrid ? samplePm25AtLonLat(lat0, lon0, sharedGrid) : null;
+
+  if (sharedGrid != null && predPm25 != null) {
+    maybeLogPm25TapNearBreakpoint(lat0, lon0, predPm25, sharedGrid);
+  }
 
   const predPm25Category = pm25BreakpointCategory(predPm25);
 

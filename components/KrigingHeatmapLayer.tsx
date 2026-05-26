@@ -6,6 +6,11 @@ import type { FeatureCollection, MultiPolygon } from 'geojson';
 import type { CurrentKrigingRow } from '../lib/database.types';
 import { pm25BreakpointCategory } from '../lib/aqiUtils';
 import { PM25_CONTOUR_THRESHOLDS as pm25ContourThresholds } from '../lib/airQualityBreakpoints';
+import {
+  gridXYToLonLat,
+  pm25GridToContourFlat,
+  rowsToPm25Grid2D,
+} from '../lib/modeling/gridMath';
 import { resolveHeatmapGridRows } from '../lib/resolveHeatmapGrid';
 import type { MapRegion } from '../lib/mapRegionFromData';
 import type { SensorPoint } from '../lib/sensorTypes';
@@ -46,61 +51,17 @@ export function KrigingHeatmapLayer({
       const validRows = gridRows.filter(
         (r) => Number.isFinite(r.latitude) && Number.isFinite(r.longitude) && Number.isFinite(r.pm25),
       );
-      if (validRows.length === 0) {
+      const grid = rowsToPm25Grid2D(validRows);
+      if (grid == null) {
         return {
           type: 'FeatureCollection',
           features: [],
         } as FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }>;
       }
 
-      const byLat = new Map<number, Map<number, number>>();
-      for (const row of validRows) {
-        let lonMap = byLat.get(row.latitude);
-        if (!lonMap) {
-          lonMap = new Map<number, number>();
-          byLat.set(row.latitude, lonMap);
-        }
-        lonMap.set(row.longitude, row.pm25 as number);
-      }
-
-      const latAsc = Array.from(byLat.keys()).sort((a, b) => a - b);
-      if (latAsc.length < 2) {
-        return {
-          type: 'FeatureCollection',
-          features: [],
-        } as FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }>;
-      }
-      const lonAsc = Array.from(byLat.get(latAsc[0])?.keys() ?? []).sort((a, b) => a - b);
-      if (lonAsc.length < 2) {
-        return {
-          type: 'FeatureCollection',
-          features: [],
-        } as FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }>;
-      }
-
-      const n = lonAsc.length;
-      const m = latAsc.length;
-      const minLon = lonAsc[0];
-      const maxLon = lonAsc[n - 1];
-      const minLat = latAsc[0];
-      const maxLat = latAsc[m - 1];
-      if (!(maxLon > minLon) || !(maxLat > minLat)) {
-        return {
-          type: 'FeatureCollection',
-          features: [],
-        } as FeatureCollection<MultiPolygon, { sortKey: number; color: string; level: number }>;
-      }
-
-      const values: number[] = [];
-      for (let y = 0; y < m; y++) {
-        const lat = latAsc[m - 1 - y];
-        const lonMap = byLat.get(lat);
-        for (let x = 0; x < n; x++) {
-          const lon = lonAsc[x];
-          const pm = lonMap?.get(lon);
-          values.push(pm == null ? 0 : pm);
-        }
-      }
+      const n = grid.lonAsc.length;
+      const m = grid.latAsc.length;
+      const values = pm25GridToContourFlat(grid);
 
       const contourGen = contours().size([n, m]).thresholds(pm25ContourThresholds);
       const contourFeatures = contourGen(values);
@@ -114,8 +75,7 @@ export function KrigingHeatmapLayer({
             const projected = feature.coordinates.map((poly: number[][][]) =>
               poly.map((ring: number[][]) =>
                 ring.map(([x, y]: number[]) => {
-                  const lon = minLon + (x / (n - 1)) * (maxLon - minLon);
-                  const lat = maxLat - (y / (m - 1)) * (maxLat - minLat);
+                  const { lon, lat } = gridXYToLonLat(x, y, grid);
                   return [lon, lat] as [number, number];
                 }),
               ),

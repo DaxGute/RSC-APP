@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   LayoutChangeEvent,
@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 import Svg, { ClipPath, Defs, G, Line, Path, Rect } from 'react-native-svg';
-import { aqiCategory } from '../lib/aqiUtils';
+import { AQI_CATEGORY_BANDS, AQI_INDEX_MAX } from '../lib/airQualityBreakpoints';
 
 export type TimeRangePoint = {
   time: string;
@@ -46,8 +46,67 @@ const CHART_HEIGHT = 72;
 const CHART_PADDING_X = 8;
 const CHART_PADDING_Y = 8;
 
+/** Scrub chart line coloring: EPA index bands (Hazardous capped at display max). */
+const CHART_AQI_BANDS = AQI_CATEGORY_BANDS.map((band, index) => ({
+  id: `aqi-band-${index}`,
+  lo: band.indexLo,
+  hi: band.indexHi ?? AQI_INDEX_MAX,
+  color: band.bg,
+}));
+
+type ChartScale = {
+  paddedMin: number;
+  paddedMax: number;
+  valueSpan: number;
+  usableH: number;
+  usableW: number;
+};
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
+}
+
+function aqiToChartY(aqi: number, scale: ChartScale): number {
+  const clamped = clamp(aqi, scale.paddedMin, scale.paddedMax);
+  return CHART_PADDING_Y + scale.usableH * (1 - (clamped - scale.paddedMin) / scale.valueSpan);
+}
+
+/** Horizontal strip in chart coords for AQI [lo, hi], intersected with the visible y-scale. */
+function horizontalBandClipRect(
+  lo: number,
+  hi: number,
+  scale: ChartScale,
+  layoutW: number,
+): { y: number; height: number; width: number } | null {
+  const visibleLo = Math.max(lo, scale.paddedMin);
+  const visibleHi = Math.min(hi, scale.paddedMax);
+  if (visibleLo > visibleHi) return null;
+  const yTop = aqiToChartY(visibleHi, scale);
+  const yBottom = aqiToChartY(visibleLo, scale);
+  const height = yBottom - yTop;
+  if (height <= 0.5) return null;
+  return { y: yTop, height, width: Math.max(1, layoutW) };
+}
+
+/** Vertical strip for `orientation === 'vertical'` (AQI on x-axis). */
+function verticalBandClipRect(
+  lo: number,
+  hi: number,
+  scale: ChartScale,
+  layoutH: number,
+): { x: number; width: number; height: number } | null {
+  const visibleLo = Math.max(lo, scale.paddedMin);
+  const visibleHi = Math.min(hi, scale.paddedMax);
+  if (visibleLo > visibleHi) return null;
+  const usableW = scale.usableW;
+  const xLo =
+    CHART_PADDING_X + usableW * (1 - (visibleLo - scale.paddedMin) / scale.valueSpan);
+  const xHi =
+    CHART_PADDING_X + usableW * (1 - (visibleHi - scale.paddedMin) / scale.valueSpan);
+  const x = Math.min(xLo, xHi);
+  const width = Math.abs(xHi - xLo);
+  if (width <= 0.5) return null;
+  return { x, width, height: Math.max(1, layoutH) };
 }
 
 function desaturateHex(hex: string, amount01: number): string {
@@ -88,6 +147,7 @@ export function TimeRangeModule({
   markerLabel = null,
   onScrubBegin,
 }: TimeRangeModuleProps) {
+  const svgUid = useId().replace(/:/g, '');
   const [layoutW, setLayoutW] = useState(0);
   const [layoutH, setLayoutH] = useState(0);
   const [dragX, setDragX] = useState<number | null>(null);
@@ -96,7 +156,16 @@ export function TimeRangeModule({
 
   const normalized = useMemo(() => {
     const clean = points.filter((p) => Number.isFinite(p.avgAqi));
+    const usableW = Math.max(1, layoutW - CHART_PADDING_X * 2);
+    const usableH = Math.max(1, layoutH - CHART_PADDING_Y * 2);
     if (clean.length === 0) {
+      const emptyScale: ChartScale = {
+        paddedMin: 0,
+        paddedMax: 300,
+        valueSpan: 300,
+        usableH,
+        usableW,
+      };
       return {
         values: [] as Array<{
           x: number;
@@ -105,8 +174,7 @@ export function TimeRangeModule({
           avgAqi: number;
           selectableTime?: string | null;
         }>,
-        minAqi: 0,
-        maxAqi: 300,
+        scale: emptyScale,
       };
     }
     const minAqi = Math.min(...clean.map((p) => p.avgAqi));
@@ -115,8 +183,7 @@ export function TimeRangeModule({
     const paddedMin = Math.max(0, minAqi - span * 0.15);
     const paddedMax = maxAqi + span * 0.15;
     const valueSpan = Math.max(1, paddedMax - paddedMin);
-    const usableW = Math.max(1, layoutW - CHART_PADDING_X * 2);
-    const usableH = Math.max(1, layoutH - CHART_PADDING_Y * 2);
+    const scale: ChartScale = { paddedMin, paddedMax, valueSpan, usableH, usableW };
     const values = clean.map((p) => {
       const frac = clamp(p.position, 0, 1);
       if (orientation === 'vertical') {
@@ -128,7 +195,7 @@ export function TimeRangeModule({
       const y = CHART_PADDING_Y + usableH * (1 - (p.avgAqi - paddedMin) / valueSpan);
       return { ...p, x, y };
     });
-    return { values };
+    return { values, scale };
   }, [layoutH, layoutW, orientation, points]);
 
   const selectedPos = useMemo(() => {
@@ -142,18 +209,28 @@ export function TimeRangeModule({
     return { x, y: null as number | null };
   }, [layoutH, layoutW, orientation, selectedPosition]);
 
-  const lineSegments = useMemo(() => {
+  const linePathD = useMemo(() => {
     const pts = normalized.values;
-    if (pts.length < 2) return [] as Array<{ key: string; x1: number; y1: number; x2: number; y2: number; color: string }>;
-    const out: Array<{ key: string; x1: number; y1: number; x2: number; y2: number; color: string }> = [];
-    for (let i = 0; i < pts.length - 1; i += 1) {
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const meanAqi = (p1.avgAqi + p2.avgAqi) / 2;
-      out.push({ key: `seg-${i}`, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, color: active ? aqiCategory(meanAqi).bg : '#94a3b8' });
-    }
-    return out;
-  }, [active, normalized.values]);
+    if (pts.length < 2) return null;
+    const poly = pts.map((p) => `${p.x} ${p.y}`).join(' L ');
+    return `M ${pts[0].x} ${pts[0].y} L ${poly}`;
+  }, [normalized.values]);
+
+  const aqiBandClips = useMemo(() => {
+    if (layoutW <= 0 || layoutH <= 0) return [];
+    const { scale } = normalized;
+    return CHART_AQI_BANDS.map((band) => {
+      const clipId = `${svgUid}-${band.id}`;
+      if (orientation === 'vertical') {
+        const rect = verticalBandClipRect(band.lo, band.hi, scale, layoutH);
+        if (!rect) return null;
+        return { ...band, clipId, rect, orientation: 'vertical' as const };
+      }
+      const rect = horizontalBandClipRect(band.lo, band.hi, scale, layoutW);
+      if (!rect) return null;
+      return { ...band, clipId, rect, orientation: 'horizontal' as const };
+    }).filter((b): b is NonNullable<typeof b> => b != null);
+  }, [layoutH, layoutW, normalized, orientation, svgUid]);
 
   const areaPathD = useMemo(() => {
     const pts = normalized.values;
@@ -356,16 +433,27 @@ export function TimeRangeModule({
           );
         })}
         <Svg width="100%" height="100%">
-          {markerMain != null && layoutW > 0 && layoutH > 0 ? (
+          {layoutW > 0 && layoutH > 0 ? (
             <Defs>
-              <ClipPath id="afterClip">
-                <Rect
-                  x={orientation === 'vertical' ? 0 : markerMain}
-                  y={orientation === 'vertical' ? 0 : 0}
-                  width={orientation === 'vertical' ? layoutW : Math.max(0, layoutW - markerMain)}
-                  height={orientation === 'vertical' ? Math.max(0, markerMain) : layoutH}
-                />
-              </ClipPath>
+              {aqiBandClips.map((band) => (
+                <ClipPath key={band.clipId} id={band.clipId}>
+                  {band.orientation === 'vertical' ? (
+                    <Rect x={band.rect.x} y={0} width={band.rect.width} height={band.rect.height} />
+                  ) : (
+                    <Rect x={0} y={band.rect.y} width={band.rect.width} height={band.rect.height} />
+                  )}
+                </ClipPath>
+              ))}
+              {markerMain != null ? (
+                <ClipPath id={`${svgUid}-after`}>
+                  <Rect
+                    x={orientation === 'vertical' ? 0 : markerMain}
+                    y={0}
+                    width={orientation === 'vertical' ? layoutW : Math.max(0, layoutW - markerMain)}
+                    height={orientation === 'vertical' ? Math.max(0, markerMain) : layoutH}
+                  />
+                </ClipPath>
+              ) : null}
             </Defs>
           ) : null}
 
@@ -394,58 +482,65 @@ export function TimeRangeModule({
               />
             );
           })}
-          {lineSegments.map((seg) => (
-            <Line
-              key={`${seg.key}-outline`}
-              x1={seg.x1}
-              y1={seg.y1}
-              x2={seg.x2}
-              y2={seg.y2}
-              stroke={active ? 'rgba(2, 6, 23, 0.75)' : 'rgba(71, 85, 105, 0.65)'}
-              strokeWidth={6}
-              strokeLinecap="round"
-            />
-          ))}
-          {lineSegments.map((seg) => (
-            <Line
-              key={seg.key}
-              x1={seg.x1}
-              y1={seg.y1}
-              x2={seg.x2}
-              y2={seg.y2}
-              stroke={seg.color}
-              strokeWidth={3}
-              strokeLinecap="round"
-            />
-          ))}
-          {markerMain != null && layoutW > 0 && layoutH > 0 ? (
-            <G clipPath="url(#afterClip)">
-              {areaPathD ? (
-                <Path d={areaPathD} fill={active ? 'rgba(148, 163, 184, 0.26)' : 'rgba(148, 163, 184, 0.18)'} />
-              ) : null}
-              {lineSegments.map((seg) => (
-                <Line
-                  key={`${seg.key}-outline-after`}
-                  x1={seg.x1}
-                  y1={seg.y1}
-                  x2={seg.x2}
-                  y2={seg.y2}
-                  stroke={active ? 'rgba(15, 23, 42, 0.62)' : 'rgba(100, 116, 139, 0.55)'}
+          {linePathD ? (
+            !active ? (
+              <Path
+                d={linePathD}
+                fill="none"
+                stroke="#94a3b8"
+                strokeWidth={3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ) : (
+              <>
+                <Path
+                  d={linePathD}
+                  fill="none"
+                  stroke="rgba(2, 6, 23, 0.75)"
                   strokeWidth={6}
                   strokeLinecap="round"
+                  strokeLinejoin="round"
                 />
-              ))}
-              {lineSegments.map((seg) => (
-                <Line
-                  key={`${seg.key}-after`}
-                  x1={seg.x1}
-                  y1={seg.y1}
-                  x2={seg.x2}
-                  y2={seg.y2}
-                  stroke={active ? desaturateHex(seg.color, 0.7) : '#94a3b8'}
-                  strokeWidth={3}
-                  strokeLinecap="round"
-                />
+                {aqiBandClips.map((band) => (
+                  <G key={`line-${band.clipId}`} clipPath={`url(#${band.clipId})`}>
+                    <Path
+                      d={linePathD}
+                      fill="none"
+                      stroke={band.color}
+                      strokeWidth={3}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </G>
+                ))}
+              </>
+            )
+          ) : null}
+          {markerMain != null && layoutW > 0 && layoutH > 0 && linePathD && active ? (
+            <G clipPath={`url(#${svgUid}-after)`}>
+              {areaPathD ? (
+                <Path d={areaPathD} fill="rgba(148, 163, 184, 0.26)" />
+              ) : null}
+              <Path
+                d={linePathD}
+                fill="none"
+                stroke="rgba(15, 23, 42, 0.62)"
+                strokeWidth={6}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {aqiBandClips.map((band) => (
+                <G key={`line-after-${band.clipId}`} clipPath={`url(#${band.clipId})`}>
+                  <Path
+                    d={linePathD}
+                    fill="none"
+                    stroke={desaturateHex(band.color, 0.7)}
+                    strokeWidth={3}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </G>
               ))}
             </G>
           ) : null}

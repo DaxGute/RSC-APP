@@ -26,31 +26,38 @@ import { computeSsfSelection } from '../lib/ssfSelection';
 import type { SensorPoint } from '../lib/sensorTypes';
 import type { FetchError } from '../lib/fetchAirQuality';
 import type { Metric } from '../lib/metric';
+import type { AppLanguage } from '../lib/appLanguage';
+import type { MapScreenCopy } from '../lib/mapScreenCopy';
+import { localizedAqiCategoryLabel, mapScreenCopy } from '../lib/mapScreenCopy';
+import { useAppLanguage } from '../contexts/LanguageProvider';
 import { MetricFade } from './MetricFade';
 import { MetricToggle } from './MetricToggle';
 
 export type { Metric } from '../lib/metric';
 
-function sheetPanelTitle(panel: { kind: string; isSensorReading?: boolean }): string {
+function sheetPanelTitle(
+  panel: { kind: string; isSensorReading?: boolean },
+  copy: MapScreenCopy,
+): string {
   switch (panel.kind) {
     case 'oob':
-      return 'Out of bounds';
+      return copy.panelOutOfBounds;
     case 'msg':
-      return 'Air quality';
+      return copy.panelAirQuality;
     case 'placeholder':
-      return 'Click a point on the map';
+      return copy.panelClickMap;
     case 'ok':
-      return panel.isSensorReading ? 'Sensor Reading' : 'Air Quality Estimate';
+      return panel.isSensorReading ? copy.panelSensorReading : copy.panelAirQualityEstimate;
     default:
-      return 'Air Quality Estimate';
+      return copy.panelAirQualityEstimate;
   }
 }
 
-function metricHeroLabel(metric: Metric, isSensorReading: boolean): string {
+function metricHeroLabel(metric: Metric, isSensorReading: boolean, copy: MapScreenCopy): string {
   if (isSensorReading) {
-    return metric === 'aqi' ? 'Observed AQI' : 'Observed PM2.5';
+    return metric === 'aqi' ? copy.panelObservedAqi : copy.panelObservedPm25;
   }
-  return metric === 'aqi' ? 'Predicted AQI' : 'Predicted PM2.5';
+  return metric === 'aqi' ? copy.panelPredictedAqi : copy.panelPredictedPm25;
 }
 
 /** Preset cooldowns for the reminder modal (minutes). Default selection is 60. Labels are short so the row fits on one line. */
@@ -151,6 +158,8 @@ export function AqiPanel({
   openReminderModalSignal = 0,
   onPanelTouchStart,
 }: AqiPanelProps) {
+  const { language } = useAppLanguage();
+  const copy = mapScreenCopy[language];
   const { width: winW } = useWindowDimensions();
   const isNarrow = winW <= 640;
   const [metric, setMetric] = useState<Metric>('pm25');
@@ -194,13 +203,13 @@ export function AqiPanel({
       return { kind: 'oob' as const, lat, lon };
     }
     if (error) {
-      return { kind: 'msg' as const, msg: `Couldn't load data: ${error.message}` };
+      return { kind: 'msg' as const, msg: copy.panelLoadDataError(error.message) };
     }
     if (loading && sensors.length === 0 && kriging.length === 0) {
-      return { kind: 'msg' as const, msg: 'Loading PurpleAir data…' };
+      return { kind: 'msg' as const, msg: copy.panelLoadingData };
     }
     if (!loading && sensors.length === 0 && kriging.length === 0) {
-      return { kind: 'msg' as const, msg: 'No sensor or grid data yet.' };
+      return { kind: 'msg' as const, msg: copy.panelNoSensorData };
     }
 
     const isSensorReading = selectedSensor != null;
@@ -231,7 +240,7 @@ export function AqiPanel({
       isSensorReading,
       closest: isSensorReading ? null : base.closest,
     };
-  }, [selected, loading, error, sensors, kriging, mapRegion, selectedSensor]);
+  }, [copy, selected, loading, error, sensors, kriging, mapRegion, selectedSensor]);
 
   const showReminderButton = Boolean(onReminderPickThreshold && panel.kind === 'ok');
 
@@ -273,7 +282,7 @@ export function AqiPanel({
           <>
             <View style={styles.sheetTitleRow}>
               <Text style={styles.sheetTitle} numberOfLines={1}>
-                {sheetPanelTitle(panel)}
+                {sheetPanelTitle(panel, copy)}
               </Text>
               <View style={styles.sheetTitleActions}>
                 {showReminderButton ? (
@@ -282,7 +291,7 @@ export function AqiPanel({
                     hitSlop={12}
                     style={styles.chromeIconBtnSheet}
                     accessibilityRole="button"
-                    accessibilityLabel="Air quality reminder"
+                    accessibilityLabel={copy.panelAirQualityReminderA11y}
                   >
                     <FontAwesome
                       name={reminderBellActive ? 'bell' : 'bell-o'}
@@ -297,7 +306,7 @@ export function AqiPanel({
                     hitSlop={12}
                     style={styles.chromeIconBtnSheet}
                     accessibilityRole="button"
-                    accessibilityLabel="Close air quality panel"
+                    accessibilityLabel={copy.panelCloseA11y}
                   >
                     <Text style={styles.closeBtnText}>✕</Text>
                   </Pressable>
@@ -313,6 +322,8 @@ export function AqiPanel({
                 heroAccent={heroAccent}
                 heroValueSize={heroValueSize}
                 cardValueSize={cardValueSize}
+                copy={copy}
+                language={language}
               />
             </View>
           </>
@@ -327,7 +338,7 @@ export function AqiPanel({
                       hitSlop={12}
                       style={styles.chromeIconBtn}
                       accessibilityRole="button"
-                      accessibilityLabel="Air quality reminder"
+                      accessibilityLabel={copy.panelAirQualityReminderA11y}
                     >
                       <FontAwesome
                         name={reminderBellActive ? 'bell' : 'bell-o'}
@@ -341,7 +352,7 @@ export function AqiPanel({
                     hitSlop={12}
                     style={styles.chromeIconBtn}
                     accessibilityRole="button"
-                    accessibilityLabel="Close air quality panel"
+                    accessibilityLabel={copy.panelCloseA11y}
                   >
                     <Text style={styles.closeBtnText}>✕</Text>
                   </Pressable>
@@ -355,10 +366,8 @@ export function AqiPanel({
             >
           {panel.kind === 'oob' ? (
             <View style={[styles.empty, styles.emptyMinH]}>
-              <Text style={styles.emptyTitle}>Out of bounds</Text>
-              <Text style={styles.emptyBody}>
-                Those coordinates aren’t inside the configured map area.
-              </Text>
+              <Text style={styles.emptyTitle}>{copy.panelOutOfBounds}</Text>
+              <Text style={styles.emptyBody}>{copy.panelOobBody}</Text>
               <Text style={styles.emptyCoords}>
                 {panel.lat.toFixed(5)}, {panel.lon.toFixed(5)}
               </Text>
@@ -373,7 +382,7 @@ export function AqiPanel({
             <>
               <View style={styles.modernTop}>
                 <View>
-                  <Text style={styles.eyebrow}>Click a point on the map</Text>
+                  <Text style={styles.eyebrow}>{copy.panelClickMap}</Text>
                   <Text style={styles.coords}>-, -.</Text>
                 </View>
               </View>
@@ -386,14 +395,14 @@ export function AqiPanel({
                 >
                   <MetricFade contentKey={`ph-${metric}`} style={styles.heroInner}>
                     <Text style={styles.heroLabel}>
-                      {metricHeroLabel(metric, false)}
+                      {metricHeroLabel(metric, false, copy)}
                     </Text>
                     <View style={styles.heroRow}>
                       <Text style={[styles.heroValue, { fontSize: heroValueSize }]}>—</Text>
                       <Text style={styles.heroUnit}>{metric === 'aqi' ? 'AQI' : 'µg/m³'}</Text>
                     </View>
                     <View style={styles.badge}>
-                      <Text style={styles.badgeText}>No data</Text>
+                      <Text style={styles.badgeText}>{copy.panelNoData}</Text>
                     </View>
                   </MetricFade>
                 </LinearGradient>
@@ -404,7 +413,7 @@ export function AqiPanel({
               <View style={styles.modernTop}>
                 <View style={styles.modernTopLeft}>
                   <Text style={styles.eyebrow}>
-                    {panel.isSensorReading ? 'Sensor Reading' : 'Air Quality Estimate'}
+                    {panel.isSensorReading ? copy.panelSensorReading : copy.panelAirQualityEstimate}
                   </Text>
                   <Text style={styles.coords}>
                     {selectedLabel ?? `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
@@ -424,7 +433,7 @@ export function AqiPanel({
                     style={styles.heroInner}
                   >
                     <Text style={styles.heroLabel}>
-                      {metricHeroLabel(metric, panel.isSensorReading)}
+                      {metricHeroLabel(metric, panel.isSensorReading, copy)}
                     </Text>
                     <View style={styles.heroRow}>
                       <Text style={[styles.heroValue, { fontSize: heroValueSize }]}>
@@ -440,7 +449,9 @@ export function AqiPanel({
                     </View>
                     <View style={styles.badge}>
                       <Text style={styles.badgeText}>
-                        {metric === 'aqi' ? panel.aqiCat.label : panel.predPm25Category.label}
+                        {metric === 'aqi'
+                          ? localizedAqiCategoryLabel(panel.aqiCat.label, language)
+                          : localizedAqiCategoryLabel(panel.predPm25Category.label, language)}
                       </Text>
                     </View>
                   </MetricFade>
@@ -461,13 +472,13 @@ export function AqiPanel({
               {panel.kind === 'placeholder' ? (
                 <>
                   <MiniCard
-                    k="Closest sensor"
+                    k={copy.panelClosestSensor}
                     v="—"
-                    sub="Click the map to see the nearest sensor"
+                    sub={copy.panelClickMapForSensor}
                     valueFontSize={cardValueSize}
                   />
                   <MiniCard
-                    k="Sensor distance"
+                    k={copy.panelSensorDistance}
                     v="—"
                     valueFontSize={cardValueSize}
                   />
@@ -475,7 +486,7 @@ export function AqiPanel({
               ) : (
                 <>
                   <MiniCard
-                    k="Closest sensor"
+                    k={copy.panelClosestSensor}
                     v={
                       panel.closest
                         ? metric === 'aqi'
@@ -486,7 +497,7 @@ export function AqiPanel({
                     valueFontSize={cardValueSize}
                   />
                   <MiniCard
-                    k="Sensor distance"
+                    k={copy.panelSensorDistance}
                     v={
                       panel.closest ? `${milesBetweenKm(panel.closest.distKm).toFixed(2)} mi` : '—'
                     }
@@ -513,14 +524,11 @@ export function AqiPanel({
             style={styles.reminderModalBackdrop}
             onPress={closeReminderModal}
             accessibilityRole="button"
-            accessibilityLabel="Dismiss"
+            accessibilityLabel={copy.panelDismissA11y}
           />
           <View style={styles.reminderModalCard}>
-            <Text style={styles.reminderModalTitle}>Remind when</Text>
-            <Text style={styles.reminderModalHint}>
-              Tap an EPA color — we’ll notify when the estimated AQI at this spot reaches that level
-              or worse. Only one location can be saved.
-            </Text>
+            <Text style={styles.reminderModalTitle}>{copy.reminderModalTitle}</Text>
+            <Text style={styles.reminderModalHint}>{copy.reminderModalHint}</Text>
             <View style={styles.reminderColorList}>
               {EPA_AQI_CATEGORY_BANDS.slice(1).map((row, i) => {
                 const index = i + 1;
@@ -544,14 +552,18 @@ export function AqiPanel({
                       pressed && (saved ? styles.reminderColorRowPressedSaved : styles.reminderColorRowPressed),
                     ]}
                     accessibilityRole="button"
-                    accessibilityLabel={`${row.cat.label}, AQI ${row.lo}–${row.hi}`}
+                    accessibilityLabel={copy.reminderBandA11y(
+                      localizedAqiCategoryLabel(row.cat.label, language),
+                      row.lo,
+                      row.hi,
+                    )}
                   >
                     <View style={[styles.reminderSwatch, { backgroundColor: row.cat.bg }]} />
                     <Text
                       style={[styles.reminderColorLabel, saved && styles.reminderColorLabelSaved]}
                       numberOfLines={2}
                     >
-                      {row.cat.label}
+                      {localizedAqiCategoryLabel(row.cat.label, language)}
                     </Text>
                     <Text style={[styles.reminderBandRange, saved && styles.reminderBandRangeSaved]}>
                       {row.lo}–{row.hi}
@@ -561,10 +573,8 @@ export function AqiPanel({
               })}
             </View>
             <View style={styles.reminderCooldownBlock}>
-              <Text style={styles.reminderCooldownLabel}>Minimum time between alerts</Text>
-              <Text style={styles.reminderCooldownHint}>
-                After a notification, wait this long before the next one at this spot.
-              </Text>
+              <Text style={styles.reminderCooldownLabel}>{copy.reminderCooldownLabel}</Text>
+              <Text style={styles.reminderCooldownHint}>{copy.reminderCooldownHint}</Text>
               <View style={styles.reminderCooldownChips}>
                 {REMINDER_COOLDOWN_PRESETS.map((p) => {
                   const selected = reminderCooldownMinutes === p.minutes;
@@ -589,7 +599,7 @@ export function AqiPanel({
                       ]}
                       accessibilityRole="button"
                       accessibilityState={{ selected }}
-                      accessibilityLabel={`Cooldown ${p.a11y}`}
+                      accessibilityLabel={copy.reminderCooldownA11yForMinutes(p.minutes)}
                     >
                       <Text
                         style={[
@@ -613,9 +623,9 @@ export function AqiPanel({
                 }}
                 style={styles.reminderClearBtn}
                 accessibilityRole="button"
-                accessibilityLabel="Clear reminder for this location"
+                accessibilityLabel={copy.reminderClearA11y}
               >
-                <Text style={styles.reminderClearBtnText}>Clear reminder</Text>
+                <Text style={styles.reminderClearBtnText}>{copy.reminderClear}</Text>
               </Pressable>
             ) : null}
           </View>
@@ -649,6 +659,8 @@ function CompactPanelBody({
   heroAccent,
   heroValueSize,
   cardValueSize,
+  copy,
+  language,
 }: {
   panel: PanelState;
   selectedLabel?: string | null;
@@ -657,13 +669,13 @@ function CompactPanelBody({
   heroAccent: string;
   heroValueSize: number;
   cardValueSize: number;
+  copy: MapScreenCopy;
+  language: AppLanguage;
 }) {
   if (panel.kind === 'oob') {
     return (
       <View style={styles.compactMsgBox}>
-        <Text style={styles.compactMsgBody}>
-          Those coordinates aren’t inside the configured map area.
-        </Text>
+        <Text style={styles.compactMsgBody}>{copy.panelOobBody}</Text>
         <Text style={styles.compactCoordsMono}>
           {panel.lat.toFixed(5)}, {panel.lon.toFixed(5)}
         </Text>
@@ -714,14 +726,18 @@ function CompactPanelBody({
             contentKey={`compact-hero-${metric}-${heroMainValue}-${ph ? 'ph' : okPanel ? panel.aqiCat.label : ''}`}
           >
             <Text style={styles.compactHeroLabel}>
-              {metricHeroLabel(metric, okPanel ? panel.isSensorReading : false)}
+              {metricHeroLabel(metric, okPanel ? panel.isSensorReading : false, copy)}
             </Text>
             <View style={styles.compactHeroValueRow}>
               <Text style={[styles.compactHeroValue, { fontSize: heroValueSize }]}>{heroMainValue}</Text>
               <Text style={styles.compactHeroUnit}>{metric === 'aqi' ? 'AQI' : 'µg/m³'}</Text>
               <View style={styles.compactBadge}>
                 <Text style={styles.compactBadgeText} numberOfLines={1}>
-                  {ph ? 'No data' : metric === 'aqi' ? panel.aqiCat.label : panel.predPm25Category.label}
+                  {ph
+                    ? copy.panelNoData
+                    : metric === 'aqi'
+                      ? localizedAqiCategoryLabel(panel.aqiCat.label, language)
+                      : localizedAqiCategoryLabel(panel.predPm25Category.label, language)}
                 </Text>
               </View>
             </View>
@@ -735,7 +751,7 @@ function CompactPanelBody({
           style={styles.compactCardsRow}
         >
           <MiniCard
-            k="Closest sensor"
+            k={copy.panelClosestSensor}
             v={
               ph
                 ? '—'
@@ -745,12 +761,12 @@ function CompactPanelBody({
                     : `${panel.closest.pm25.toFixed(1)} µg/m³`
                   : '—'
             }
-            sub={ph ? 'Click the map to see the nearest sensor' : undefined}
+            sub={ph ? copy.panelClickMapForSensor : undefined}
             valueFontSize={cardValueSize}
             compact
           />
           <MiniCard
-            k="Sensor distance"
+            k={copy.panelSensorDistance}
             v={
               ph || !panel.closest ? '—' : `${milesBetweenKm(panel.closest.distKm).toFixed(2)} mi`
             }

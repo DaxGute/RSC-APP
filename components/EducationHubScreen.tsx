@@ -11,7 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
-import type { AppLanguage } from '../lib/appLanguage';
+import { useAppLanguage } from '../contexts/LanguageProvider';
 import {
   educationCopy,
   youtubeThumbnailUri,
@@ -22,7 +22,6 @@ import {
 import { educationTheme } from '../lib/educationTheme';
 import { buildYouTubeEmbedHtml, YOUTUBE_EMBED_ORIGIN } from '../lib/youtubeEmbed';
 import { AqiHealthExplorer } from './AqiHealthExplorer';
-import { LanguageToggle } from './LanguageToggle';
 import Animated, {
   Extrapolation,
   interpolate,
@@ -283,7 +282,7 @@ function AqiCategoryRow({
 }
 
 export function EducationHubScreen() {
-  const [language, setLanguage] = useState<AppLanguage>('en');
+  const { language } = useAppLanguage();
   const [expandedLevelId, setExpandedLevelId] = useState<EducationAqiLevelId | null>(null);
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
   const copy = educationCopy[language];
@@ -309,14 +308,11 @@ export function EducationHubScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.heroCard}>
-          <View style={styles.headerTopRow}>
-            <View style={styles.titleRow}>
-              <View style={styles.titleIconWrap}>
-                <Ionicons name="school" size={22} color={educationTheme.accentColor} />
-              </View>
-              <Text style={styles.pageTitle}>Education</Text>
+          <View style={styles.titleRow}>
+            <View style={styles.titleIconWrap}>
+              <Ionicons name="school" size={22} color={educationTheme.accentColor} />
             </View>
-            <LanguageToggle value={language} onChange={setLanguage} />
+            <Text style={styles.pageTitle}>Education</Text>
           </View>
           <Text style={styles.pageSubtitle}>{copy.pageSubtitle}</Text>
         </View>
@@ -401,12 +397,6 @@ const styles = StyleSheet.create({
     padding: educationTheme.cardPadding,
     gap: 10,
     ...educationTheme.shadow,
-  },
-  headerTopRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 10,
   },
   titleRow: {
     flexDirection: 'row',

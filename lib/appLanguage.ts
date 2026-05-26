@@ -1,7 +1,7 @@
 /** App UI language. Extend here when adding locales app-wide. */
 export type AppLanguage = 'en' | 'es';
 
-/** AsyncStorage key for a future persisted app-wide language preference. */
+/** AsyncStorage key for the persisted app-wide language preference. */
 export const APP_LANGUAGE_STORAGE_KEY = 'app.language';
 
 export const APP_LANGUAGES: AppLanguage[] = ['en', 'es'];

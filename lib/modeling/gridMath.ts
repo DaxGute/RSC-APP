@@ -17,6 +17,116 @@ export type Pm25Grid2D = {
   time: string;
 };
 
+/** Geographic axes for PM2.5 grids (scalar samples at latAsc/lonAsc cell centers). */
+export type Pm25GridMeta = Pick<Pm25Grid2D, 'latAsc' | 'lonAsc'>;
+
+/**
+ * Map lon/lat to continuous d3-contour grid coordinates.
+ * x=0 → minLon (west), y=0 → maxLat (north); spans [0, n−1] × [0, m−1].
+ */
+export function lonLatToGridXY(
+  lat: number,
+  lon: number,
+  meta: Pm25GridMeta,
+): { x: number; y: number } {
+  const { latAsc, lonAsc } = meta;
+  const m = latAsc.length;
+  const n = lonAsc.length;
+  if (m < 2 || n < 2) return { x: 0, y: 0 };
+  const latMin = latAsc[0];
+  const latMax = latAsc[m - 1];
+  const lonMin = lonAsc[0];
+  const lonMax = lonAsc[n - 1];
+  if (!(latMax > latMin) || !(lonMax > lonMin)) return { x: 0, y: 0 };
+  const lonT = clamp((lon - lonMin) / (lonMax - lonMin), 0, 1);
+  const latFromNorthT = clamp((latMax - lat) / (latMax - latMin), 0, 1);
+  return {
+    x: lonT * (n - 1),
+    y: latFromNorthT * (m - 1),
+  };
+}
+
+/** Inverse of `lonLatToGridXY` (contour index space → cell-center lon/lat). */
+export function gridXYToLonLat(
+  x: number,
+  y: number,
+  meta: Pm25GridMeta,
+): { lat: number; lon: number } {
+  const { latAsc, lonAsc } = meta;
+  const m = latAsc.length;
+  const n = lonAsc.length;
+  const latMin = latAsc[0];
+  const latMax = latAsc[m - 1];
+  const lonMin = lonAsc[0];
+  const lonMax = lonAsc[n - 1];
+  if (m < 2 || n < 2) {
+    return { lat: latAsc[0] ?? 0, lon: lonAsc[0] ?? 0 };
+  }
+  if (!(latMax > latMin) || !(lonMax > lonMin)) {
+    return { lat: latAsc[0] ?? 0, lon: lonAsc[0] ?? 0 };
+  }
+  const lon = lonMin + (x / (n - 1)) * (lonMax - lonMin);
+  const lat = latMax - (y / (m - 1)) * (latMax - latMin);
+  return { lat, lon };
+}
+
+/** Bilinear sample on a grid in continuous index space (same convention as d3-contour). */
+export function sampleBilinearAtGridXY(values: number[][], gx: number, gy: number): number {
+  const m = values.length;
+  const n = values[0]?.length ?? 0;
+  if (m === 0 || n === 0) return 0;
+  if (m === 1 && n === 1) return values[0]?.[0] ?? 0;
+
+  const x = clamp(gx, 0, n - 1);
+  const y = clamp(gy, 0, m - 1);
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(x0 + 1, n - 1);
+  const y1 = Math.min(y0 + 1, m - 1);
+  const fx = x - x0;
+  const fy = y - y0;
+
+  const v00 = values[y0]?.[x0] ?? 0;
+  const v01 = values[y0]?.[x1] ?? 0;
+  const v10 = values[y1]?.[x0] ?? 0;
+  const v11 = values[y1]?.[x1] ?? 0;
+  const top = v00 * (1 - fx) + v01 * fx;
+  const bottom = v10 * (1 - fx) + v11 * fx;
+  return top * (1 - fy) + bottom * fy;
+}
+
+/**
+ * 2D scalar field in d3-contour layout: row y=0 is north (maxLat), x=0 is west (minLon).
+ * Missing cells use 0, matching contour rendering.
+ */
+export function pm25GridToContourValues(grid: Pm25Grid2D): number[][] {
+  const m = grid.latAsc.length;
+  const n = grid.lonAsc.length;
+  const out: number[][] = [];
+  for (let y = 0; y < m; y += 1) {
+    const yi = m - 1 - y;
+    const row: number[] = [];
+    for (let x = 0; x < n; x += 1) {
+      row.push(grid.values[yi]?.[x] ?? 0);
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+/** Row-major flat array for `d3-contour` (y=0 north). */
+export function pm25GridToContourFlat(grid: Pm25Grid2D): number[] {
+  const oriented = pm25GridToContourValues(grid);
+  return oriented.flat();
+}
+
+/** Sample PM2.5 at lon/lat using the same grid transform as rendered contours. */
+export function samplePm25AtLonLat(lat: number, lon: number, grid: Pm25Grid2D): number {
+  const contourValues = pm25GridToContourValues(grid);
+  const { x, y } = lonLatToGridXY(lat, lon, grid);
+  return sampleBilinearAtGridXY(contourValues, x, y);
+}
+
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -245,35 +355,9 @@ export function poolWindFlat(u: Float32Array, v: Float32Array, poolSize: number)
   return out;
 }
 
-export function sampleBilinearGrid(values: number[][], lat: number, lon: number, grid: Pm25Grid2D): number {
-  const { latAsc, lonAsc } = grid;
-  const m = latAsc.length;
-  const n = lonAsc.length;
-  if (m < 2 || n < 2) return values[0]?.[0] ?? 0;
-  const latMin = latAsc[0];
-  const latMax = latAsc[m - 1];
-  const lonMin = lonAsc[0];
-  const lonMax = lonAsc[n - 1];
-  if (!(latMax > latMin) || !(lonMax > lonMin)) return values[0]?.[0] ?? 0;
-
-  const latT = clamp((lat - latMin) / (latMax - latMin), 0, 1);
-  const lonT = clamp((lon - lonMin) / (lonMax - lonMin), 0, 1);
-  const y = latT * (m - 1);
-  const x = lonT * (n - 1);
-  const y0 = Math.floor(y);
-  const x0 = Math.floor(x);
-  const y1 = Math.min(y0 + 1, m - 1);
-  const x1 = Math.min(x0 + 1, n - 1);
-  const fy = y - y0;
-  const fx = x - x0;
-
-  const v00 = values[y0]?.[x0] ?? 0;
-  const v01 = values[y0]?.[x1] ?? 0;
-  const v10 = values[y1]?.[x0] ?? 0;
-  const v11 = values[y1]?.[x1] ?? 0;
-  const top = v00 * (1 - fx) + v01 * fx;
-  const bottom = v10 * (1 - fx) + v11 * fx;
-  return top * (1 - fy) + bottom * fy;
+/** @deprecated Prefer `samplePm25AtLonLat` (contour-aligned sampling). */
+export function sampleBilinearGrid(_values: number[][], lat: number, lon: number, grid: Pm25Grid2D): number {
+  return samplePm25AtLonLat(lat, lon, grid);
 }
 
 /** One light 3×3 smoothing pass. */

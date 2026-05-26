@@ -20,12 +20,19 @@ export type AnalogMatchLike = {
   weight: number;
 };
 
+export type TopAnalogMatchSummary = {
+  time: string;
+  distance: number;
+  weight: number;
+};
+
 export type AnalogProjectionQuality = {
   librarySampleCount: number;
   topKCount: number;
   meanTopKDistance: number | null;
   bestTopKDistance: number | null;
   topAnalogTimestamps: string[];
+  topAnalogMatches: TopAnalogMatchSummary[];
   weakFallbackWeight: number;
   usedWeakFallback: boolean;
   /** Top-K analogs with a delta for each future step (+1h … +5h). */
@@ -147,6 +154,11 @@ export function buildAnalogProjectionQuality(params: {
     meanTopKDistance: meanDist,
     bestTopKDistance: params.matches[0]?.distance ?? null,
     topAnalogTimestamps: params.matches.map((m) => m.sample.time),
+    topAnalogMatches: params.matches.map((m) => ({
+      time: m.sample.time,
+      distance: m.distance,
+      weight: m.weight,
+    })),
     weakFallbackWeight: params.weakFallbackWeight,
     usedWeakFallback,
     horizonTopKValidCounts,

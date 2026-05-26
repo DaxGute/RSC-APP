@@ -8,8 +8,10 @@ import { StatusBar } from 'expo-status-bar';
 
 import { AqiGraphScreen } from './components/AqiGraphScreen';
 import { EducationHubScreen } from './components/EducationHubScreen';
+import { GlobalLanguageSwitch } from './components/GlobalLanguageSwitch';
 import { InitialLoadSplash } from './components/InitialLoadSplash';
 import { SsfAirQualityScreen } from './components/SsfAirQualityScreen';
+import { LanguageProvider } from './contexts/LanguageProvider';
 import { useSsfAirQuality } from './hooks/useSsfAirQuality';
 import { ensureAnonymousSession } from './lib/ensureAnonymousSession';
 import {
@@ -131,8 +133,11 @@ export default function App() {
   return (
     <GestureHandlerRootView style={styles.gestureRoot}>
       <SafeAreaProvider>
-        <AppContent />
-        <StatusBar style="dark" />
+        <LanguageProvider>
+          <AppContent />
+          <GlobalLanguageSwitch />
+          <StatusBar style="dark" />
+        </LanguageProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
