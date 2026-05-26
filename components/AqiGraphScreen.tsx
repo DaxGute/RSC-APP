@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ActivityIndicator, LayoutChangeEvent, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Line } from 'react-native-svg';
 
 import { dailyAqiMapFromDaySummaries, type DaySummary } from '../lib/aqiCalendarData';
@@ -20,6 +22,7 @@ import {
 } from '../lib/yearlyPm25ByMonth';
 import { useAppLanguage } from '../contexts/LanguageProvider';
 import { aqiGraphCopy } from '../lib/aqiGraphContent';
+import { educationTheme } from '../lib/educationTheme';
 import { AqiColoredCalendar } from './AqiColoredCalendar';
 
 const GRAPH_HISTORY_WEEKS = 12;
@@ -33,10 +36,8 @@ type AqiGraphScreenProps = {
 };
 
 const ROLLING_HOUR_CHART_HEIGHT = 100;
-const ROLLING_HOUR_CHART_MAX_AQI = 150;
 const ROLLING_HOUR_LABEL_HOURS = [0, 6, 12, 18];
 const YEARLY_PM25_CHART_HEIGHT = 100;
-const YEARLY_PM25_CHART_MIN_MAX = 35;
 
 function formatRollingHourLabel(hour: number): string {
   if (hour === 0) return '12a';
@@ -45,13 +46,32 @@ function formatRollingHourLabel(hour: number): string {
   return `${hour - 12}p`;
 }
 
-function rollingHourBarHeight(avgAqi: number): number {
-  return Math.max(4, (avgAqi / ROLLING_HOUR_CHART_MAX_AQI) * ROLLING_HOUR_CHART_HEIGHT);
+function rollingHourBarHeight(avgAqi: number, chartPeakAqi: number): number {
+  const scale = Math.max(1, chartPeakAqi);
+  return Math.max(4, (avgAqi / scale) * ROLLING_HOUR_CHART_HEIGHT);
 }
 
-function yearlyPm25BarHeight(avgPm25: number, chartMaxPm25: number): number {
-  const scale = Math.max(YEARLY_PM25_CHART_MIN_MAX, chartMaxPm25);
+function yearlyPm25BarHeight(avgPm25: number, chartPeakPm25: number): number {
+  const scale = Math.max(1, chartPeakPm25);
   return Math.max(4, (avgPm25 / scale) * YEARLY_PM25_CHART_HEIGHT);
+}
+
+type GraphSectionProps = {
+  sectionLabel: string;
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+};
+
+function GraphSection({ sectionLabel, title, subtitle, children }: GraphSectionProps) {
+  return (
+    <View style={styles.sectionCard}>
+      <Text style={styles.sectionLabel}>{sectionLabel}</Text>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <Text style={styles.sectionSubtitle}>{subtitle}</Text>
+      <View style={styles.sectionBody}>{children}</View>
+    </View>
+  );
 }
 
 export function AqiGraphScreen({
@@ -138,6 +158,11 @@ export function AqiGraphScreen({
     return Math.max(...withData.map((slot) => slot.avgAqi));
   }, [rollingWeekHourly]);
 
+  const rollingWeekChartPeakAqi = useMemo(() => {
+    if (rollingWeekPeakAvg == null) return 1;
+    return Math.max(1, rollingWeekPeakAvg);
+  }, [rollingWeekPeakAvg]);
+
   const [rollingHourChartWidth, setRollingHourChartWidth] = useState(0);
 
   const handleRollingHourChartLayout = useCallback((e: LayoutChangeEvent) => {
@@ -147,8 +172,8 @@ export function AqiGraphScreen({
 
   const rollingWeekPeakLineBottom = useMemo(() => {
     if (rollingWeekPeakAvg == null) return null;
-    return rollingHourBarHeight(rollingWeekPeakAvg);
-  }, [rollingWeekPeakAvg]);
+    return rollingHourBarHeight(rollingWeekPeakAvg, rollingWeekChartPeakAqi);
+  }, [rollingWeekPeakAvg, rollingWeekChartPeakAqi]);
 
   const monthDayKeys = useMemo(() => enumerateDaysInMonth(visibleMonthKey), [visibleMonthKey]);
   const monthCategoryCounts = useMemo(() => {
@@ -180,12 +205,12 @@ export function AqiGraphScreen({
     [yearlyPm25Chart.bars],
   );
 
-  const yearlyPm25ChartMax = useMemo(() => {
+  const yearlyPm25ChartPeak = useMemo(() => {
     const values = yearlyPm25Chart.bars
       .map((bar) => bar.avgPm25)
       .filter((v): v is number => v != null && Number.isFinite(v));
-    if (values.length === 0) return YEARLY_PM25_CHART_MIN_MAX;
-    return Math.max(YEARLY_PM25_CHART_MIN_MAX, ...values);
+    if (values.length === 0) return 1;
+    return Math.max(1, ...values);
   }, [yearlyPm25Chart.bars]);
 
   const [yearlyPm25ChartWidth, setYearlyPm25ChartWidth] = useState(0);
@@ -218,16 +243,30 @@ export function AqiGraphScreen({
   const currentYear = new Date().getFullYear();
 
   return (
-    <View style={styles.screenRoot}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>{copy.title}</Text>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        style={styles.scroll}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.heroCard}>
+          <View style={styles.titleRow}>
+            <View style={styles.titleIconWrap}>
+              <Ionicons name="bar-chart" size={22} color={educationTheme.accentColor} />
+            </View>
+            <Text style={styles.pageTitle}>{copy.title}</Text>
+          </View>
+          <Text style={styles.pageSubtitle}>{copy.pageSubtitle}</Text>
+        </View>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>{copy.rollingSectionTitle}</Text>
-          <Text style={styles.sectionSub}>{copy.rollingSectionSub}</Text>
+        <GraphSection
+          sectionLabel={copy.rollingSectionLabel}
+          title={copy.rollingSectionTitle}
+          subtitle={copy.rollingSectionSub}
+        >
           {historyLoading || loading ? (
             <View style={styles.loadingRow}>
-              <ActivityIndicator size="small" color="#475569" />
+              <ActivityIndicator size="small" color={educationTheme.mutedColor} />
               <Text style={styles.loadingText}>{copy.loadingSensorHistory}</Text>
             </View>
           ) : !rollingWeekHasData ? (
@@ -271,7 +310,9 @@ export function AqiGraphScreen({
                 <View style={styles.rollingHourBarsRow}>
                   {rollingWeekHourly.map((slot) => {
                     const hasData = slot.sampleCount > 0;
-                    const barHeight = hasData ? rollingHourBarHeight(slot.avgAqi) : 4;
+                    const barHeight = hasData
+                      ? rollingHourBarHeight(slot.avgAqi, rollingWeekChartPeakAqi)
+                      : 4;
                     const barColor = hasData ? aqiCategory(slot.avgAqi).bg : '#e2e8f0';
                     return (
                       <View key={slot.hour} style={styles.rollingHourBarWrap}>
@@ -308,15 +349,18 @@ export function AqiGraphScreen({
               </View>
             </View>
           )}
-        </View>
+        </GraphSection>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>{copy.calendarSectionTitle}</Text>
-          <Text style={styles.sectionSub}>{copy.calendarSectionSub}</Text>
+        <GraphSection
+          sectionLabel={copy.calendarSectionLabel}
+          title={copy.calendarSectionTitle}
+          subtitle={copy.calendarSectionSub}
+        >
           <AqiColoredCalendar
             timelineTimesAsc={timelineTimesAsc}
             timelineIndex={timelineIndex}
             liveAverageAqi={liveAverageAqi}
+            highlightSelectedDay={false}
             onVisibleMonthChange={handleVisibleMonthChange}
             onMonthDaySummariesChange={handleMonthDaySummariesChange}
           />
@@ -342,16 +386,16 @@ export function AqiGraphScreen({
               </View>
             )}
           </View>
-        </View>
+        </GraphSection>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>{copy.yearlySectionTitle}</Text>
-          <Text style={styles.sectionSub}>
-            {copy.yearlySectionSub(currentYear, currentYear - 1)}
-          </Text>
+        <GraphSection
+          sectionLabel={copy.yearlySectionLabel}
+          title={copy.yearlySectionTitle}
+          subtitle={copy.yearlySectionSub(currentYear, currentYear - 1)}
+        >
           {yearlyPm25Loading ? (
             <View style={styles.loadingRow}>
-              <ActivityIndicator size="small" color="#475569" />
+              <ActivityIndicator size="small" color={educationTheme.mutedColor} />
               <Text style={styles.loadingText}>{copy.loadingDailyPm25}</Text>
             </View>
           ) : !yearlyPm25HasData ? (
@@ -392,7 +436,7 @@ export function AqiGraphScreen({
                   {yearlyPm25Chart.bars.map((bar) => {
                     const hasData = bar.avgPm25 != null;
                     const barHeight = hasData
-                      ? yearlyPm25BarHeight(bar.avgPm25 as number, yearlyPm25ChartMax)
+                      ? yearlyPm25BarHeight(bar.avgPm25 as number, yearlyPm25ChartPeak)
                       : 4;
                     const aqi = hasData ? pm25ToAqi(bar.avgPm25) : null;
                     const barColor = hasData && aqi != null ? aqiCategory(aqi).bg : '#e2e8f0';
@@ -422,48 +466,91 @@ export function AqiGraphScreen({
               </View>
             </View>
           )}
-        </View>
+        </GraphSection>
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  screenRoot: {
+  container: {
     flex: 1,
-    backgroundColor: '#e8f0fe',
+    backgroundColor: educationTheme.screenBackground,
+  },
+  scroll: {
+    flex: 1,
   },
   content: {
-    paddingTop: 16,
-    paddingHorizontal: 16,
-    paddingBottom: 110,
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: educationTheme.sectionGap,
   },
-  title: {
+  heroCard: {
+    backgroundColor: educationTheme.cardBackground,
+    borderRadius: educationTheme.cardRadius,
+    borderWidth: 1,
+    borderColor: educationTheme.cardBorderColor,
+    padding: educationTheme.cardPadding,
+    gap: 10,
+    ...educationTheme.shadow,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  titleIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: educationTheme.innerSurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pageTitle: {
     fontSize: 24,
     fontWeight: '800',
-    color: '#0f172a',
-    marginTop: 30,
-    marginBottom: 12,
+    color: educationTheme.titleColor,
+    letterSpacing: -0.3,
   },
-  card: {
-    marginBottom: 10,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.94)',
+  pageSubtitle: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: educationTheme.bodyColor,
+  },
+  sectionCard: {
+    backgroundColor: educationTheme.cardBackground,
+    borderRadius: educationTheme.cardRadius,
     borderWidth: 1,
-    borderColor: '#cbd5e1',
-    padding: 12,
+    borderColor: educationTheme.cardBorderColor,
+    padding: educationTheme.cardPadding,
+    gap: 6,
+    ...educationTheme.shadow,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: educationTheme.mutedColor,
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '800',
-    color: '#0f172a',
+    color: educationTheme.titleColor,
+  },
+  sectionSubtitle: {
+    fontSize: 12.5,
+    lineHeight: 18,
+    color: educationTheme.bodyColor,
     marginBottom: 4,
   },
-  sectionSub: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '600',
-    marginBottom: 10,
+  sectionBody: {
+    gap: 10,
+    marginTop: 4,
   },
   loadingRow: {
     flexDirection: 'row',
@@ -474,12 +561,12 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 13,
-    color: '#64748b',
+    color: educationTheme.mutedColor,
     fontWeight: '600',
   },
   emptyText: {
     fontSize: 13,
-    color: '#64748b',
+    color: educationTheme.mutedColor,
     fontWeight: '600',
     paddingVertical: 8,
   },
@@ -487,7 +574,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
+    borderTopColor: educationTheme.cardBorderColor,
   },
   categoryLegend: {
     gap: 6,
@@ -506,7 +593,7 @@ const styles = StyleSheet.create({
   },
   categoryLegendLabel: {
     fontSize: 13,
-    color: '#334155',
+    color: educationTheme.bodyColor,
     fontWeight: '600',
   },
   rollingHourChart: {
@@ -535,7 +622,7 @@ const styles = StyleSheet.create({
   rollingHourPeakLabelText: {
     fontSize: 9,
     fontWeight: '700',
-    color: '#64748b',
+    color: educationTheme.mutedColor,
   },
   rollingHourBarsRow: {
     flexDirection: 'row',
@@ -575,7 +662,7 @@ const styles = StyleSheet.create({
   rollingHourLabel: {
     fontSize: 7,
     lineHeight: 10,
-    color: '#94a3b8',
+    color: educationTheme.mutedColor,
     fontWeight: '700',
     textAlign: 'center',
     width: '100%',
@@ -607,7 +694,7 @@ const styles = StyleSheet.create({
   yearlyPm25PriorYearLabelText: {
     fontSize: 9,
     fontWeight: '700',
-    color: '#64748b',
+    color: educationTheme.mutedColor,
   },
   yearlyPm25BarsRow: {
     flexDirection: 'row',
@@ -649,7 +736,7 @@ const styles = StyleSheet.create({
   },
   yearlyPm25Label: {
     fontSize: 9,
-    color: '#94a3b8',
+    color: educationTheme.mutedColor,
     fontWeight: '700',
     textAlign: 'center',
     width: '100%',

@@ -17,3 +17,8 @@ export const GLOBAL_LANGUAGE_SWITCH_HOST_LIFT = 8;
 /** Background extension below the track into the tab-bar gap (px). */
 export const GLOBAL_LANGUAGE_SWITCH_TRACK_EXTENSION =
   GLOBAL_LANGUAGE_SWITCH_TAB_GAP + GLOBAL_LANGUAGE_SWITCH_HOST_LIFT;
+
+/**
+ * Model projection overlay (`ModelProjectionMap`) — below language switch (190) and tab bar (200).
+ */
+export const MODEL_PROJECTION_OVERLAY_Z_INDEX = 150;

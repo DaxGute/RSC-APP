@@ -15,7 +15,9 @@ import {
 import Mapbox from '@rnmapbox/maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useAppLanguage } from '../contexts/LanguageProvider';
 import { KrigingHeatmapLayer } from './KrigingHeatmapLayer';
+import { MapScaleActions } from './MapScaleActions';
 import { WindArrowLayer } from './WindArrowLayer';
 import type { CurrentKrigingRow } from '../lib/database.types';
 import { SSF_BBOX } from '../lib/constants/ssf';
@@ -24,7 +26,11 @@ import {
   windGridSliceAtMinutes,
   type ForecastWindGridByTime,
 } from '../lib/forecastWindGrid';
-import { buildHistoricalAnalogLibrary } from '../lib/modeling/buildHistoricalAnalogLibrary';
+import {
+  analogLibraryCacheKey,
+  buildHistoricalAnalogLibrary,
+  getCachedAnalogLibrary,
+} from '../lib/modeling/buildHistoricalAnalogLibrary';
 import {
   formatAnalogTimestamp,
   horizonLabelForStepIndex,
@@ -35,7 +41,7 @@ import {
   generateAnalogProjectionFrames,
   type ProjectionFrame,
 } from '../lib/modeling/generateAnalogProjectionFrames';
-import { createSmoothLoadProgress } from '../lib/modeling/smoothLoadProgress';
+import { createPhaseLoadProgress } from '../lib/modeling/phaseLoadProgress';
 import type { MapRegion } from '../lib/mapRegionFromData';
 import {
   formatProjectionHeader,
@@ -45,20 +51,15 @@ import {
   PROJECTION_MAJOR_LABELS,
   PROJECTION_MAJOR_STEP_INDICES,
 } from '../lib/projectionTimeLabels';
-import { ROOT_TAB_BAR_TOP_RADIUS } from '../lib/constants/appLayout';
-import { EXPECTED_GRID_CELLS, resolveHeatmapGridRows } from '../lib/resolveHeatmapGrid';
-import type { SensorPoint } from '../lib/sensorTypes';
 import {
-  MODEL_EXPERIMENTAL_BADGE,
-  MODEL_HELP_BTN_A11Y,
-  MODEL_HELP_CLOSE_A11Y,
-  MODEL_HELP_MATCHES_HEADING,
-  MODEL_HELP_MATCHES_LOADING,
-  MODEL_HELP_PIPELINE,
-  MODEL_HELP_TITLE,
-  MODEL_SHORT_BLURB,
-  MODEL_TITLE,
-} from '../lib/modelProjectionCopy';
+  MODEL_PROJECTION_OVERLAY_Z_INDEX,
+  ROOT_TAB_BAR_RESERVED_HEIGHT,
+  ROOT_TAB_BAR_TOP_RADIUS,
+} from '../lib/constants/appLayout';
+import { yieldToEventLoop } from '../lib/yieldToEventLoop';
+import { resolveHeatmapGridRows } from '../lib/resolveHeatmapGrid';
+import type { SensorPoint } from '../lib/sensorTypes';
+import { modelProjectionCopy, type ModelProjectionCopy } from '../lib/modelProjectionCopy';
 
 export type ModelProjectionMapProps = {
   visible: boolean;
@@ -79,8 +80,11 @@ type FrozenProjectionBase = {
 };
 
 const DEFAULT_ZOOM_LEVEL = 12;
-const MIN_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * 0.5;
-const MAX_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * 3;
+const MIN_ZOOM_FACTOR = 0.5;
+const MAX_ZOOM_FACTOR = 3;
+const MIN_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MIN_ZOOM_FACTOR;
+const MAX_ZOOM_LEVEL = DEFAULT_ZOOM_LEVEL * MAX_ZOOM_FACTOR;
+const ZOOM_STEP = 1;
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
@@ -95,6 +99,8 @@ export function ModelProjectionMap({
   timelineTimesAsc: _timelineTimesAsc = [],
   viewingLive: _viewingLive = true,
 }: ModelProjectionMapProps) {
+  const { language } = useAppLanguage();
+  const copy = modelProjectionCopy[language];
   const insets = useSafeAreaInsets();
   const [selectedStep, setSelectedStep] = useState(0);
   const [windData, setWindData] = useState<ForecastWindGridByTime | null>(null);
@@ -109,7 +115,10 @@ export function ModelProjectionMap({
   const [mapLayoutReady, setMapLayoutReady] = useState(false);
   const [mapMountReady, setMapMountReady] = useState(false);
   const frozenBaseRef = useRef<FrozenProjectionBase | null>(null);
+  const cameraRef = useRef<Mapbox.Camera>(null);
+  const [zoomLevel, setZoomLevel] = useState(DEFAULT_ZOOM_LEVEL);
   const prevVisibleRef = useRef(false);
+  const loadGenerationRef = useRef(0);
 
   if (visible !== prevVisibleRef.current) {
     if (visible) {
@@ -128,10 +137,11 @@ export function ModelProjectionMap({
   const baseKriging = frozenBaseRef.current?.kriging ?? mapKriging;
   const baseSensors = frozenBaseRef.current?.sensors ?? mapSensors;
 
-  const nowGrid = useMemo(() => {
-    if (baseKriging.length >= EXPECTED_GRID_CELLS) return baseKriging;
-    return resolveHeatmapGridRows({ kriging: baseKriging, sensors: baseSensors });
-  }, [baseKriging, baseSensors]);
+  /** Match `KrigingHeatmapLayer` on the main map (recompute + slice to 40×40). */
+  const nowGrid = useMemo(
+    () => resolveHeatmapGridRows({ kriging: baseKriging, sensors: baseSensors }),
+    [baseKriging, baseSensors],
+  );
 
   const heatmapAvailable = nowGrid.length > 0;
   const maxStep = PROJECTION_FRAME_COUNT - 1;
@@ -142,6 +152,9 @@ export function ModelProjectionMap({
       return;
     }
 
+    const generation = ++loadGenerationRef.current;
+    const gridForLoad = nowGrid;
+
     setSelectedStep(0);
     setWindData(null);
     setPrecomputedFrames(null);
@@ -150,7 +163,7 @@ export function ModelProjectionMap({
     setWindAvailable(false);
     setWindErrorMessage(null);
     setLoadProgress(0);
-    setLoadMessage('Preparing projection…');
+    setLoadMessage('Preparing current map…');
 
     if (!heatmapAvailable) {
       setLoading(false);
@@ -160,64 +173,85 @@ export function ModelProjectionMap({
     let cancelled = false;
     setLoading(true);
 
-    const smooth = createSmoothLoadProgress((display, msg) => {
+    const progress = createPhaseLoadProgress((display, msg) => {
       if (cancelled) return;
       setLoadProgress(display);
       setLoadMessage(msg);
-    }, { estimatedMs: 16_000 });
+    });
 
-    smooth.setTarget(0.03, 'Starting…');
+    const nowMs = Date.now();
+    const cacheKey = analogLibraryCacheKey(nowMs);
+    const hasCachedLibrary = getCachedAnalogLibrary(cacheKey) != null;
 
-    void (async () => {
-      let windReady = false;
-      let libraryProgress = 0;
-      let libraryMessage = 'Loading sensor history…';
+    progress.setProgressImmediate(0.05, 'Preparing current map…');
+    progress.setProgressImmediate(0.1, 'Preparing current map…');
 
-      const syncParallelProgress = () => {
-        const windSlice = windReady ? 0.08 : 0;
-        const libSlice = libraryProgress * 0.82;
-        smooth.setTarget(0.08 + windSlice + libSlice, libraryMessage);
-      };
-
-      const [wind, libraryResult] = await Promise.all([
-        fetchForecastWindGrid().then((w) => {
-          windReady = true;
-          syncParallelProgress();
-          return w;
-        }),
-        buildHistoricalAnalogLibrary(Date.now(), (p, message) => {
-          libraryProgress = p;
-          libraryMessage = message;
-          syncParallelProgress();
-        }),
-      ]);
-      if (cancelled) {
-        smooth.stop();
+    const mapLibraryProgress = (p: number, message: string) => {
+      if (hasCachedLibrary) {
+        progress.setProgress(0.25 + p * 0.1, message);
         return;
       }
+      if (p <= 0.5) {
+        const t = p / 0.5;
+        progress.setProgress(0.25 + t * 0.3, message);
+      } else {
+        const t = (p - 0.5) / 0.5;
+        progress.setProgress(0.55 + t * 0.2, message);
+      }
+    };
+
+    void (async () => {
+      progress.setProgress(0.12, 'Loading forecast wind…');
+
+      const windPromise = fetchForecastWindGrid();
+      const libraryPromise = buildHistoricalAnalogLibrary(nowMs, mapLibraryProgress);
+
+      const wind = await windPromise;
+      if (cancelled || loadGenerationRef.current !== generation) {
+        progress.stop();
+        return;
+      }
+      progress.setProgress(0.25, 'Loading forecast wind…');
+
+      const libraryResult = await libraryPromise;
+      if (cancelled || loadGenerationRef.current !== generation) {
+        progress.stop();
+        return;
+      }
+      progress.setProgress(
+        0.75,
+        libraryResult.fromCache ? 'Using cached analog library…' : 'Building analog library…',
+      );
 
       setWindData(wind);
       setWindAvailable(wind.available);
       setWindErrorMessage(wind.available ? null : (wind.errorMessage ?? 'Wind data unavailable'));
 
-      smooth.setTarget(0.94, 'Computing forecast frames…');
+      progress.setProgress(0.78, 'Finding similar past patterns…');
+      await yieldToEventLoop();
 
       const { frames, quality } = generateAnalogProjectionFrames({
-        nowGrid,
+        nowGrid: gridForLoad,
         wind,
         library: libraryResult.library,
         debugMode: 'blend',
+        nowMs,
       });
 
-      if (cancelled) {
-        smooth.stop();
+      if (cancelled || loadGenerationRef.current !== generation) {
+        progress.stop();
         return;
       }
+
+      progress.setProgress(0.9, 'Generating forecast frames…');
       setPrecomputedFrames(frames.length > 0 ? frames : null);
       setAnalogQuality(quality);
 
-      smooth.finish('Ready', () => {
-        if (cancelled) return;
+      progress.setProgress(0.98, 'Rendering projection…');
+      await yieldToEventLoop();
+
+      progress.finish('Rendering projection…', () => {
+        if (cancelled || loadGenerationRef.current !== generation) return;
         setLoadProgress(1);
         setLoading(false);
       });
@@ -225,7 +259,7 @@ export function ModelProjectionMap({
 
     return () => {
       cancelled = true;
-      smooth.stop();
+      progress.stop();
     };
   }, [visible, heatmapAvailable, nowGrid]);
 
@@ -291,31 +325,57 @@ export function ModelProjectionMap({
     setSelectedStep((s) => clamp(s + 1, 0, maxSelectableStep));
   }, [maxSelectableStep]);
 
+  const canZoomIn = zoomLevel < MAX_ZOOM_LEVEL - 0.05;
+  const canZoomOut = zoomLevel > MIN_ZOOM_LEVEL + 0.05;
+
+  const applyZoomDelta = useCallback(
+    (delta: number) => {
+      const next = Math.min(MAX_ZOOM_LEVEL, Math.max(MIN_ZOOM_LEVEL, zoomLevel + delta));
+      setZoomLevel(next);
+      cameraRef.current?.setCamera({
+        zoomLevel: next,
+        animationDuration: 200,
+        animationMode: 'easeTo',
+      });
+    },
+    [zoomLevel],
+  );
+
+  const zoomIn = useCallback(() => applyZoomDelta(ZOOM_STEP), [applyZoomDelta]);
+  const zoomOut = useCallback(() => applyZoomDelta(-ZOOM_STEP), [applyZoomDelta]);
+
+  const handleCameraChanged = useCallback((event: { properties?: { zoom?: number } }) => {
+    const z = event.properties?.zoom;
+    if (typeof z === 'number' && Number.isFinite(z)) {
+      setZoomLevel(z);
+    }
+  }, []);
+
   if (!visible) return null;
 
   return (
-    <View style={styles.overlay} accessibilityViewIsModal>
-      <View style={styles.root}>
+    <View style={styles.overlay} pointerEvents="box-none">
+      <View style={styles.root} pointerEvents="auto">
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 8) + 4 }]}>
           <View style={styles.headerTextCol}>
             <View style={styles.titleRow}>
               <View style={styles.experimentalBadge}>
-                <Text style={styles.experimentalBadgeText}>{MODEL_EXPERIMENTAL_BADGE}</Text>
+                <Text style={styles.experimentalBadgeText}>{copy.experimentalBadge}</Text>
               </View>
               <Text style={styles.title} numberOfLines={2}>
-                {MODEL_TITLE}
+                {copy.title}
               </Text>
               <Pressable
                 onPress={() => setHelpModalOpen(true)}
                 hitSlop={10}
                 style={({ pressed }) => [styles.helpBtn, pressed && styles.helpBtnPressed]}
                 accessibilityRole="button"
-                accessibilityLabel={MODEL_HELP_BTN_A11Y}
+                accessibilityLabel={copy.helpBtnA11y}
               >
                 <Ionicons name="help-circle-outline" size={22} color="#475569" />
               </Pressable>
             </View>
-            <Text style={styles.subtitle}>{MODEL_SHORT_BLURB}</Text>
+            <Text style={styles.subtitle}>{copy.shortBlurb}</Text>
             {!loading && analogQuality ? (
               <Text style={styles.meta}>
                 {analogQuality.topKCount} matches from {analogQuality.librarySampleCount} library
@@ -377,8 +437,12 @@ export function ModelProjectionMap({
               scaleBarEnabled={false}
               rotateEnabled={false}
               pitchEnabled={false}
+              scrollEnabled={!loading}
+              zoomEnabled={!loading}
+              onCameraChanged={handleCameraChanged}
             >
               <Mapbox.Camera
+                ref={cameraRef}
                 defaultSettings={{
                   centerCoordinate: [mapRegion.longitude, mapRegion.latitude],
                   zoomLevel: DEFAULT_ZOOM_LEVEL,
@@ -416,6 +480,15 @@ export function ModelProjectionMap({
               </View>
               <Text style={styles.progressPct}>{Math.round(loadProgress * 100)}%</Text>
             </View>
+          ) : null}
+          {!loading ? (
+            <MapScaleActions
+              overlayTop={8}
+              onZoomIn={zoomIn}
+              onZoomOut={zoomOut}
+              canZoomIn={canZoomIn}
+              canZoomOut={canZoomOut}
+            />
           ) : null}
         </View>
 
@@ -525,17 +598,17 @@ export function ModelProjectionMap({
             style={styles.helpModalBackdrop}
             onPress={() => setHelpModalOpen(false)}
             accessibilityRole="button"
-            accessibilityLabel={MODEL_HELP_CLOSE_A11Y}
+            accessibilityLabel={copy.helpCloseA11y}
           />
           <View style={styles.helpModalCard}>
             <View style={styles.helpModalHeader}>
-              <Text style={styles.helpModalTitle}>{MODEL_HELP_TITLE}</Text>
+              <Text style={styles.helpModalTitle}>{copy.helpTitle}</Text>
               <Pressable
                 onPress={() => setHelpModalOpen(false)}
                 hitSlop={12}
                 style={({ pressed }) => [styles.helpModalCloseBtn, pressed && styles.helpBtnPressed]}
                 accessibilityRole="button"
-                accessibilityLabel={MODEL_HELP_CLOSE_A11Y}
+                accessibilityLabel={copy.helpCloseA11y}
               >
                 <Ionicons name="close" size={22} color="#334155" />
               </Pressable>
@@ -546,16 +619,16 @@ export function ModelProjectionMap({
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
             >
-              {MODEL_HELP_PIPELINE.map((paragraph) => (
+              {copy.helpPipeline.map((paragraph) => (
                 <Text key={paragraph.slice(0, 48)} style={styles.helpParagraph}>
                   {paragraph}
                 </Text>
               ))}
-              <Text style={styles.helpSectionLabel}>{MODEL_HELP_MATCHES_HEADING}</Text>
+              <Text style={styles.helpSectionLabel}>{copy.helpMatchesHeading}</Text>
               {loading || !analogQuality ? (
-                <Text style={styles.helpMuted}>{MODEL_HELP_MATCHES_LOADING}</Text>
+                <Text style={styles.helpMuted}>{copy.helpMatchesLoading}</Text>
               ) : (
-                <ModelProjectionMatchDetails quality={analogQuality} />
+                <ModelProjectionMatchDetails quality={analogQuality} copy={copy} />
               )}
             </ScrollView>
           </View>
@@ -565,38 +638,48 @@ export function ModelProjectionMap({
   );
 }
 
-function ModelProjectionMatchDetails({ quality }: { quality: AnalogProjectionQuality }) {
+function ModelProjectionMatchDetails({
+  quality,
+  copy,
+}: {
+  quality: AnalogProjectionQuality;
+  copy: ModelProjectionCopy;
+}) {
+  const belowMin = quality.librarySampleCount < MIN_USABLE_ANALOG_LIBRARY;
   return (
     <View style={styles.helpMatchBlock}>
       <Text style={styles.helpLine}>
-        Library: {quality.librarySampleCount} anchor samples
-        {quality.librarySampleCount < MIN_USABLE_ANALOG_LIBRARY
-          ? ` (below ${MIN_USABLE_ANALOG_LIBRARY} recommended minimum)`
-          : ''}
+        {copy.matchLibraryLine(quality.librarySampleCount, belowMin, MIN_USABLE_ANALOG_LIBRARY)}
       </Text>
       <Text style={styles.helpLine}>
-        Top-{quality.topKCount} used for blending
-        {quality.meanTopKDistance != null
-          ? ` · avg distance ${quality.meanTopKDistance.toFixed(1)}`
-          : ''}
-        {quality.bestTopKDistance != null ? ` · best ${quality.bestTopKDistance.toFixed(1)}` : ''}
+        {copy.matchTopKLine(
+          quality.topKCount,
+          quality.meanTopKDistance != null ? quality.meanTopKDistance.toFixed(1) : null,
+          quality.bestTopKDistance != null ? quality.bestTopKDistance.toFixed(1) : null,
+        )}
       </Text>
       <Text style={styles.helpLine}>
-        Recent-trend fallback weight: {(quality.weakFallbackWeight * 100).toFixed(0)}%
-        {quality.usedWeakFallback ? ' (active)' : ''}
+        {copy.matchFallbackLine(
+          (quality.weakFallbackWeight * 100).toFixed(0),
+          quality.usedWeakFallback,
+        )}
       </Text>
-      <Text style={styles.helpSubsectionLabel}>Ranked analogs (lower distance = closer match)</Text>
+      <Text style={styles.helpSubsectionLabel}>{copy.matchRankedHeading}</Text>
       {quality.topAnalogMatches.length === 0 ? (
-        <Text style={styles.helpMuted}>No matches in library.</Text>
+        <Text style={styles.helpMuted}>{copy.matchNoMatches}</Text>
       ) : (
         quality.topAnalogMatches.map((match, index) => (
           <Text key={`${match.time}-${index}`} style={styles.helpMatchRow}>
-            {index + 1}. {formatAnalogTimestamp(match.time)} · distance{' '}
-            {match.distance.toFixed(1)} · weight {(match.weight * 100).toFixed(1)}%
+            {copy.matchAnalogRow(
+              index + 1,
+              formatAnalogTimestamp(match.time, copy.localeTag),
+              match.distance.toFixed(1),
+              `${(match.weight * 100).toFixed(1)}%`,
+            )}
           </Text>
         ))
       )}
-      <Text style={styles.helpSubsectionLabel}>Future change data available</Text>
+      <Text style={styles.helpSubsectionLabel}>{copy.matchFutureHeading}</Text>
       {Array.from({ length: PROJECTION_FUTURE_STEPS }, (_, i) => {
         const libN = quality.horizonLibraryValidCounts[i] ?? 0;
         const topN = quality.horizonTopKValidCounts[i] ?? 0;
@@ -604,8 +687,12 @@ function ModelProjectionMatchDetails({ quality }: { quality: AnalogProjectionQua
         const enoughTop = topN >= Math.max(3, Math.floor(quality.topKCount * 0.5));
         return (
           <Text key={`horizon-${i}`} style={styles.helpLine}>
-            {horizonLabelForStepIndex(i + 1)}: {libN} in full library / {topN} in top matches
-            {enoughLib && enoughTop ? ' · sufficient' : ' · thin coverage'}
+            {copy.matchHorizonLine(
+              horizonLabelForStepIndex(i + 1),
+              libN,
+              topN,
+              enoughLib && enoughTop,
+            )}
           </Text>
         );
       })}
@@ -615,9 +702,13 @@ function ModelProjectionMatchDetails({ quality }: { quality: AnalogProjectionQua
 
 const styles = StyleSheet.create({
   overlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 40,
-    elevation: 40,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: ROOT_TAB_BAR_RESERVED_HEIGHT,
+    zIndex: MODEL_PROJECTION_OVERLAY_Z_INDEX,
+    elevation: MODEL_PROJECTION_OVERLAY_Z_INDEX,
     borderBottomLeftRadius: ROOT_TAB_BAR_TOP_RADIUS,
     borderBottomRightRadius: ROOT_TAB_BAR_TOP_RADIUS,
     overflow: 'hidden',
@@ -850,6 +941,7 @@ const styles = StyleSheet.create({
     minHeight: 0,
     overflow: 'hidden',
     backgroundColor: '#dbeafe',
+    position: 'relative',
   },
   map: {
     flex: 1,

@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -10,7 +10,9 @@ import { AqiGraphScreen } from './components/AqiGraphScreen';
 import { EducationHubScreen } from './components/EducationHubScreen';
 import { GlobalLanguageSwitch } from './components/GlobalLanguageSwitch';
 import { InitialLoadSplash } from './components/InitialLoadSplash';
+import { ModelProjectionMap } from './components/ModelProjectionMap';
 import { SsfAirQualityScreen } from './components/SsfAirQualityScreen';
+import { regionFromSensorData } from './lib/mapRegionFromData';
 import { LanguageProvider } from './contexts/LanguageProvider';
 import { useSsfAirQuality } from './hooks/useSsfAirQuality';
 import { ensureAnonymousSession } from './lib/ensureAnonymousSession';
@@ -40,6 +42,16 @@ function AppContent() {
     averageAqiTimeseries,
   } = useSsfAirQuality();
   const showMapLoadSplash = activeTab === 'map' && (loading || timelineLoading);
+  const [modelProjectionOpen, setModelProjectionOpen] = useState(false);
+  const mapRegion = useMemo(() => regionFromSensorData(sensors, kriging), [sensors, kriging]);
+  const handleModelProjectionOpenChange = useCallback((open: boolean) => {
+    setModelProjectionOpen(open);
+  }, []);
+
+  useEffect(() => {
+    setModelProjectionOpen(false);
+  }, [activeTab]);
+
   return (
     <View style={styles.appRoot}>
       <View style={styles.screenContainer}>
@@ -58,6 +70,8 @@ function AppContent() {
             insufficientData={insufficientData}
             liveAverageAqi={liveAverageAqi}
             averageAqiTimeseries={averageAqiTimeseries}
+            modelProjectionOpen={modelProjectionOpen}
+            onModelProjectionOpenChange={handleModelProjectionOpenChange}
           />
         ) : activeTab === 'graph' ? (
           <AqiGraphScreen
@@ -71,6 +85,15 @@ function AppContent() {
           <EducationHubScreen />
         )}
       </View>
+      <ModelProjectionMap
+        visible={modelProjectionOpen}
+        onClose={() => setModelProjectionOpen(false)}
+        mapKriging={kriging}
+        mapSensors={sensors}
+        mapRegion={mapRegion}
+        timelineTimesAsc={timelineTimesAsc}
+        viewingLive={viewingLive}
+      />
       <View style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
         <Pressable
           onPress={() => setActiveTab('map')}

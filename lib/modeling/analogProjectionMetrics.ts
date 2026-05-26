@@ -167,10 +167,10 @@ export function buildAnalogProjectionQuality(params: {
   };
 }
 
-export function formatAnalogTimestamp(iso: string): string {
+export function formatAnalogTimestamp(iso: string, locale?: string): string {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
+  return d.toLocaleString(locale, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',

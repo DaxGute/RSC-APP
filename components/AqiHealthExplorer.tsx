@@ -1,6 +1,17 @@
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Linking, PanResponder, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import {
+  Linking,
+  PanResponder,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 
 import {
   AQI_HEALTH_PAPER_URL,
@@ -19,12 +30,20 @@ import {
   mortalityPercentFromInterpolatedPm25,
 } from '../lib/aqiHealthStats';
 import { EPA_AQI_HEATMAP_GRADIENT, EPA_AQI_INDEX_MAX, aqiCategory, aqiToPm25 } from '../lib/aqiUtils';
-import { educationTheme } from '../lib/educationTheme';
 import type { EducationHealthExplorerCopy } from '../lib/educationContent';
+import { educationTheme } from '../lib/educationTheme';
 
 const THUMB_SIZE = 26;
 const TRACK_HEIGHT = 10;
 const DEFAULT_AQI = 72;
+const CITATION_ACCENT = '#2563eb';
+
+const CITATION_URLS: Record<number, string> = {
+  1: AQI_HEALTH_PAPER_URL,
+  2: BMJ_PM25_HOSPITAL_ER_URL,
+  3: OUTDOOR_MASK_PAPER_URL,
+  4: INDOOR_FILTER_PAPER_URL,
+};
 
 function clamp(n: number, lo: number, hi: number) {
   return Math.min(hi, Math.max(lo, n));
@@ -34,35 +53,61 @@ type AqiHealthExplorerProps = {
   copy: EducationHealthExplorerCopy;
 };
 
-type StatRowProps = {
+type ImpactRowProps = {
   title: string;
-  subtitle: string;
-  linkLabel: string;
-  onLinkPress: () => void;
+  context?: string;
+  citationId: number;
+  onCitationPress: (id: number) => void;
   children: ReactNode;
-  valueTone?: 'risk' | 'benefit' | 'neutral';
 };
 
-function StatRow({ title, subtitle, linkLabel, onLinkPress, children, valueTone = 'neutral' }: StatRowProps) {
+function CitationMarker({ id, onPress }: { id: number; onPress: (id: number) => void }) {
   return (
-    <View style={styles.statRow}>
-      <View style={styles.statRowLeft}>
-        <Text style={styles.statTitle}>{title}</Text>
-        <Text style={styles.statSubtitle}>
-          {subtitle}{' '}
-          <Text style={styles.statLink} onPress={onLinkPress}>
-            {linkLabel}
+    <Pressable
+      onPress={() => onPress(id)}
+      hitSlop={8}
+      accessibilityRole="link"
+      accessibilityLabel={`Citation ${id}`}
+      accessibilityHint="Opens study"
+    >
+      <Text style={styles.citationMarker}>[{id}]</Text>
+    </Pressable>
+  );
+}
+
+const PROTECTION_COLUMN_SHRINK_PX = 5;
+
+function ImpactColumn({
+  heading,
+  children,
+  style,
+}: {
+  heading: string;
+  children: ReactNode;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View style={[styles.impactColumn, style]}>
+      <Text style={styles.sectionHeading} numberOfLines={2}>
+        {heading}
+      </Text>
+      {children}
+    </View>
+  );
+}
+
+function ImpactRow({ title, context, citationId, onCitationPress, children }: ImpactRowProps) {
+  return (
+    <View style={styles.impactRow}>
+      <View style={styles.impactRowMain}>
+        <View style={styles.labelRow}>
+          <Text style={styles.rowTitle} numberOfLines={2}>
+            {title}
           </Text>
-        </Text>
-      </View>
-      <View
-        style={[
-          styles.statRowRight,
-          valueTone === 'risk' && styles.statRowRightRisk,
-          valueTone === 'benefit' && styles.statRowRightBenefit,
-        ]}
-      >
-        {children}
+          <CitationMarker id={citationId} onPress={onCitationPress} />
+        </View>
+        {context ? <Text style={styles.rowContext}>{context}</Text> : null}
+        <View style={styles.impactValues}>{children}</View>
       </View>
     </View>
   );
@@ -70,6 +115,7 @@ function StatRow({ title, subtitle, linkLabel, onLinkPress, children, valueTone 
 
 export function AqiHealthExplorer({ copy }: AqiHealthExplorerProps) {
   const [aqi, setAqi] = useState(DEFAULT_AQI);
+  const [assumptionsExpanded, setAssumptionsExpanded] = useState(false);
   const [trackWidth, setTrackWidth] = useState(0);
   const trackWidthRef = useRef(0);
 
@@ -107,7 +153,9 @@ export function AqiHealthExplorer({ copy }: AqiHealthExplorerProps) {
     }
   }, []);
 
-  const openUrl = useCallback((url: string) => {
+  const onCitationPress = useCallback((id: number) => {
+    const url = CITATION_URLS[id];
+    if (!url) return;
     void Linking.openURL(url).catch(() => {
       /* ignore */
     });
@@ -118,7 +166,7 @@ export function AqiHealthExplorer({ copy }: AqiHealthExplorerProps) {
 
   return (
     <View style={styles.root}>
-      <View style={[styles.hero, { borderColor: `${category.bg}55` }]}>
+      <View style={[styles.hero, { backgroundColor: `${category.bg}12` }]}>
         <View style={styles.heroTop}>
           <Text style={styles.heroAqiValue}>{aqi}</Text>
           <Text style={styles.heroAqiUnit}>AQI</Text>
@@ -159,83 +207,85 @@ export function AqiHealthExplorer({ copy }: AqiHealthExplorerProps) {
         <Text style={styles.sliderHint}>{copy.sliderHint}</Text>
       </View>
 
-      <View style={styles.statsCard}>
-        <StatRow
-          title={copy.mortalityTitle}
-          subtitle={copy.mortalitySubtitle}
-          linkLabel={copy.sourceLink}
-          onLinkPress={() => openUrl(AQI_HEALTH_PAPER_URL)}
-          valueTone="risk"
-        >
-          {mort ? (
-            <>
-              <Text style={styles.statValueRisk}>{formatSmallPct(mort.pct)}</Text>
-              <Text style={styles.statCi}>{formatCiPct(mort.pct - mort.uncPct, mort.pct + mort.uncPct)}</Text>
-            </>
-          ) : (
-            <Text style={styles.statEmDash}>—</Text>
-          )}
-        </StatRow>
-        <View style={styles.statDivider} />
-        <StatRow
-          title={copy.erTitle}
-          subtitle={copy.erSubtitle}
-          linkLabel={copy.sourceLink}
-          onLinkPress={() => openUrl(BMJ_PM25_HOSPITAL_ER_URL)}
-          valueTone="risk"
-        >
-          {erErr ? (
-            <>
-              <Text style={styles.statValueRisk}>{formatSmallPct(erErr.mid)}</Text>
-              <Text style={styles.statCi}>{formatCiPct(erErr.lo, erErr.hi)}</Text>
-            </>
-          ) : (
-            <Text style={styles.statEmDash}>—</Text>
-          )}
-        </StatRow>
-        <View style={styles.statDivider} />
-        <StatRow
-          title={copy.outdoorMaskTitle}
-          subtitle={copy.outdoorMaskSubtitle}
-          linkLabel={copy.sourceLink}
-          onLinkPress={() => openUrl(OUTDOOR_MASK_PAPER_URL)}
-          valueTone="benefit"
-        >
-          <Text style={styles.statValueBenefit}>{`${OUTDOOR_MASK_EFFICACY_PCT}%`}</Text>
-          <Text style={styles.statCi}>
-            {formatCiPct(OUTDOOR_MASK_CI_LO_PCT, OUTDOOR_MASK_CI_HI_PCT)}
-          </Text>
-        </StatRow>
-        <View style={styles.statDivider} />
-        <StatRow
-          title={copy.indoorFilterTitle}
-          subtitle={copy.indoorFilterSubtitle}
-          linkLabel={copy.sourceLink}
-          onLinkPress={() => openUrl(INDOOR_FILTER_PAPER_URL)}
-          valueTone="benefit"
-        >
-          <Text style={styles.statValueBenefit}>{`${INDOOR_FILTER_EFFICACY_PCT}%`}</Text>
-          <Text style={styles.statCi}>
-            {formatCiPct(INDOOR_FILTER_CI_LO_PCT, INDOOR_FILTER_CI_HI_PCT)}
-          </Text>
-        </StatRow>
+      <View style={styles.impactsColumns}>
+        <ImpactColumn heading={copy.healthImpactsHeading} style={styles.healthImpactColumn}>
+          <ImpactRow title={copy.mortalityTitle} citationId={1} onCitationPress={onCitationPress}>
+            {mort ? (
+              <>
+                <Text style={styles.primaryEstimateHealth}>{formatSmallPct(mort.pct)}</Text>
+                <Text style={styles.confidenceInterval}>
+                  {formatCiPct(mort.pct - mort.uncPct, mort.pct + mort.uncPct)}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.emDashHealth}>—</Text>
+            )}
+          </ImpactRow>
+          <View style={styles.softDivider} />
+          <ImpactRow title={copy.erTitle} citationId={2} onCitationPress={onCitationPress}>
+            {erErr ? (
+              <>
+                <Text style={styles.primaryEstimateHealth}>{formatSmallPct(erErr.mid)}</Text>
+                <Text style={styles.confidenceInterval}>{formatCiPct(erErr.lo, erErr.hi)}</Text>
+              </>
+            ) : (
+              <Text style={styles.emDashHealth}>—</Text>
+            )}
+          </ImpactRow>
+        </ImpactColumn>
+
+        <View style={styles.columnDivider} />
+
+        <ImpactColumn heading={copy.protectionEfficacyHeading} style={styles.protectionImpactColumn}>
+          <ImpactRow title={copy.outdoorMaskLabel} citationId={3} onCitationPress={onCitationPress}>
+            <Text style={styles.primaryEstimateProtection}>{`${OUTDOOR_MASK_EFFICACY_PCT}%`}</Text>
+            <Text style={styles.confidenceInterval}>
+              {formatCiPct(OUTDOOR_MASK_CI_LO_PCT, OUTDOOR_MASK_CI_HI_PCT)}
+            </Text>
+          </ImpactRow>
+          <View style={styles.softDivider} />
+          <ImpactRow title={copy.indoorFilterLabel} citationId={4} onCitationPress={onCitationPress}>
+            <Text style={styles.primaryEstimateProtection}>{`${INDOOR_FILTER_EFFICACY_PCT}%`}</Text>
+            <Text style={styles.confidenceInterval}>
+              {formatCiPct(INDOOR_FILTER_CI_LO_PCT, INDOOR_FILTER_CI_HI_PCT)}
+            </Text>
+          </ImpactRow>
+        </ImpactColumn>
       </View>
 
-      <Text style={styles.footnote}>{copy.footnote}</Text>
+      <View style={styles.assumptionsBlock}>
+        <Pressable
+          onPress={() => setAssumptionsExpanded((open) => !open)}
+          style={styles.assumptionsHeader}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: assumptionsExpanded }}
+          accessibilityLabel={copy.assumptionsTitle}
+        >
+          <Text style={styles.assumptionsTitle}>{copy.assumptionsTitle}</Text>
+          <View
+            style={[
+              styles.assumptionsChevron,
+              { transform: [{ rotate: assumptionsExpanded ? '180deg' : '0deg' }] },
+            ]}
+          >
+            <Ionicons name="chevron-down" size={12} color={educationTheme.mutedColor} />
+          </View>
+        </Pressable>
+        {assumptionsExpanded ? <Text style={styles.assumptionsBody}>{copy.assumptionsBody}</Text> : null}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: {
-    gap: 12,
+    gap: 16,
   },
   hero: {
-    backgroundColor: educationTheme.innerSurface,
     borderRadius: 10,
-    borderWidth: 1,
-    padding: 12,
-    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
   },
   heroTop: {
     flexDirection: 'row',
@@ -267,9 +317,9 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   heroPm25: {
-    fontSize: 12.5,
+    fontSize: 12,
     fontWeight: '600',
-    color: educationTheme.bodyColor,
+    color: educationTheme.mutedColor,
   },
   sliderBlock: {
     gap: 6,
@@ -301,79 +351,134 @@ const styles = StyleSheet.create({
     ...educationTheme.shadow,
   },
   sliderHint: {
-    fontSize: 11.5,
-    lineHeight: 16,
+    fontSize: 11,
+    lineHeight: 15,
     color: educationTheme.mutedColor,
   },
-  statsCard: {
-    borderWidth: 1,
-    borderColor: educationTheme.cardBorderColor,
-    borderRadius: 10,
-    overflow: 'hidden',
-    backgroundColor: educationTheme.innerSurface,
-  },
-  statRow: {
+  impactsColumns: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
   },
-  statRowLeft: {
+  impactColumn: {
     flex: 1,
-    gap: 3,
     minWidth: 0,
   },
-  statTitle: {
-    fontSize: 13.5,
+  healthImpactColumn: {
+    flexBasis: PROTECTION_COLUMN_SHRINK_PX,
+  },
+  protectionImpactColumn: {
+    flexBasis: -PROTECTION_COLUMN_SHRINK_PX,
+  },
+  columnDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    backgroundColor: educationTheme.cardBorderColor,
+    marginVertical: 2,
+  },
+  sectionHeading: {
+    fontSize: 10,
     fontWeight: '800',
-    color: educationTheme.titleColor,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    color: educationTheme.mutedColor,
+    marginBottom: 8,
+    lineHeight: 13,
   },
-  statSubtitle: {
-    fontSize: 11.5,
-    lineHeight: 16,
-    color: educationTheme.bodyColor,
+  impactRow: {
+    paddingVertical: 6,
   },
-  statLink: {
-    fontSize: 11.5,
-    fontWeight: '700',
-    color: '#2563eb',
-    textDecorationLine: 'underline',
+  impactRowMain: {
+    gap: 3,
   },
-  statRowRight: {
-    alignItems: 'flex-end',
-    minWidth: 72,
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 2,
   },
-  statRowRightRisk: {},
-  statRowRightBenefit: {},
-  statValueRisk: {
+  rowTitle: {
+    flexShrink: 1,
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: educationTheme.titleColor,
+    lineHeight: 16,
+  },
+  citationMarker: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: CITATION_ACCENT,
+    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    overflow: 'hidden',
+    lineHeight: 14,
+  },
+  rowContext: {
+    fontSize: 11,
+    lineHeight: 14,
+    color: educationTheme.bodyColor,
+  },
+  impactValues: {
+    marginTop: 4,
+    gap: 1,
+  },
+  primaryEstimateHealth: {
     fontSize: 15,
     fontWeight: '800',
     color: '#dc2626',
+    letterSpacing: -0.2,
   },
-  statValueBenefit: {
+  primaryEstimateProtection: {
     fontSize: 15,
     fontWeight: '800',
     color: '#15803d',
+    letterSpacing: -0.2,
   },
-  statCi: {
-    fontSize: 10.5,
-    fontWeight: '600',
-    color: educationTheme.mutedColor,
+  confidenceInterval: {
+    fontSize: 9.5,
+    fontWeight: '500',
+    lineHeight: 12,
+    color: '#94a3b8',
   },
-  statEmDash: {
+  emDashHealth: {
     fontSize: 15,
     fontWeight: '700',
+    color: '#dc2626',
+    opacity: 0.45,
+  },
+  softDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: educationTheme.cardBorderColor,
+    marginVertical: 2,
+  },
+  assumptionsBlock: {
+    gap: 6,
+    paddingTop: 2,
+  },
+  assumptionsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  assumptionsTitle: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
     color: educationTheme.mutedColor,
   },
-  statDivider: {
-    height: 1,
-    backgroundColor: educationTheme.cardBorderColor,
+  assumptionsChevron: {
+    width: 14,
+    height: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  footnote: {
+  assumptionsBody: {
     fontSize: 11,
     lineHeight: 16,
-    color: educationTheme.mutedColor,
+    color: '#94a3b8',
   },
 });

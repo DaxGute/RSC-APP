@@ -30,19 +30,17 @@ export type EducationAqiLevel = {
 };
 
 export type EducationHealthExplorerCopy = {
+  healthImpactsHeading: string;
   mortalityTitle: string;
-  mortalitySubtitle: string;
   erTitle: string;
-  erSubtitle: string;
-  outdoorMaskTitle: string;
-  outdoorMaskSubtitle: string;
-  indoorFilterTitle: string;
-  indoorFilterSubtitle: string;
-  sourceLink: string;
+  protectionEfficacyHeading: string;
+  outdoorMaskLabel: string;
+  indoorFilterLabel: string;
+  assumptionsTitle: string;
+  assumptionsBody: string;
   pm25Equivalent: string;
   pm25Unknown: string;
   sliderHint: string;
-  footnote: string;
 };
 
 export type EducationCopy = {
@@ -72,13 +70,13 @@ export const educationCopy: Record<AppLanguage, EducationCopy> = {
   en: {
     pageSubtitle:
       'Air quality guidance, health tips, and practical home tutorials to reduce pollution indoors.',
-    pmSectionLabel: 'Step 1',
+    pmSectionLabel: 'Section 1',
     pmTitle: 'About PM2.5',
     pmBody: [
       'PM2.5 are fine particles small enough to travel deep into the lungs and sometimes into the bloodstream. Common sources include wildfire smoke, traffic emissions, industry, and burning fuels.',
       'Even short-term exposure can worsen asthma and heart symptoms. Long-term exposure is linked to higher risk of respiratory and cardiovascular disease.',
     ],
-    aqiSectionLabel: 'Step 2',
+    aqiSectionLabel: 'Section 2',
     aqiSectionTitle: 'AQI health guide',
     aqiSectionSubtitle: 'Tap a category to see health guidance and recommended actions for each level.',
     aqiLevels: [
@@ -169,27 +167,25 @@ export const educationCopy: Record<AppLanguage, EducationCopy> = {
       'Pregnant people',
       'People who work or exercise heavily outdoors',
     ],
-    healthSectionLabel: 'Step 3',
+    healthSectionLabel: 'Section 3',
     healthSectionTitle: 'Health impact explorer',
     healthSectionSubtitle:
       'Drag AQI to see how estimated PM2.5 scales mortality and ER visit rates from published studies.',
     healthExplorer: {
+      healthImpactsHeading: 'Short-term Health Impact',
       mortalityTitle: 'Mortality risk',
-      mortalitySubtitle: 'Short-term PM2.5 meta-analysis',
-      erTitle: 'ER visit rate',
-      erSubtitle: 'Respiratory visits vs two-day PM2.5; excess relative risk',
-      outdoorMaskTitle: 'Outdoor mask efficacy',
-      outdoorMaskSubtitle: 'Pooled outdoor estimate with proper use',
-      indoorFilterTitle: 'Indoor filter efficacy',
-      indoorFilterSubtitle: 'Pooled indoor estimate with proper use and scale',
-      sourceLink: 'Source',
-      pm25Equivalent: 'Equivalent ≈ {value} µg/m³ PM2.5 (EPA breakpoints)',
-      pm25Unknown: 'PM2.5 equivalent unavailable',
+      erTitle: 'Respiratory ER visits',
+      protectionEfficacyHeading: 'Protection efficacy',
+      outdoorMaskLabel: 'Outdoor masks',
+      indoorFilterLabel: 'Indoor filtration',
+      assumptionsTitle: 'Supporting assumptions',
+      assumptionsBody:
+        '[1] Assumes short-term mortality risk increases approximately linearly with PM₂.₅ exposure and that published population-level epidemiological risk estimates are applicable to local outdoor exposure conditions\n\n[2] Assumes respiratory emergency department visit risk increases approximately linearly with short-term PM₂.₅ exposure and that the published population-level association is transferable to local outdoor exposure conditions\n\n[3] Assumes properly worn outdoor masks provide an approximately constant average PM₂.₅ exposure reduction across pollution levels and environmental conditions\n\n[4] Assumes indoor air filtration provides an approximately constant average reduction in indoor PM₂.₅ exposure across pollution levels, building conditions, and user behaviors',
+      pm25Equivalent: '{value} µg/m³',
+      pm25Unknown: '—',
       sliderHint: 'Drag the colored slider to explore different AQI levels.',
-      footnote:
-        'Mask and filter percentages are fixed pooled estimates from literature and do not change with AQI. Mortality and ER rates scale with estimated PM2.5.',
     },
-    videoSectionLabel: 'Step 4',
+    videoSectionLabel: 'Section 4',
     videoSectionTitle: 'How-To Videos',
     videoSectionSubtitle:
       'Watch quick how-to videos for improving indoor air quality and reducing outdoor pollution indoors.',
@@ -203,13 +199,13 @@ export const educationCopy: Record<AppLanguage, EducationCopy> = {
   es: {
     pageSubtitle:
       'Guía de calidad del aire, salud y tutoriales prácticos para reducir la contaminación dentro del hogar.',
-    pmSectionLabel: 'Paso 1',
+    pmSectionLabel: 'Sección 1',
     pmTitle: 'Sobre PM2.5',
     pmBody: [
       'PM2.5 son partículas finas lo bastante pequeñas como para llegar profundo a los pulmones y, a veces, al torrente sanguíneo. Las fuentes comunes incluyen humo de incendios, emisiones del tráfico, la industria y la quema de combustibles.',
       'Incluso la exposición a corto plazo puede empeorar los síntomas de asma y del corazón. La exposición prolongada se asocia con mayor riesgo de enfermedades respiratorias y cardiovasculares.',
     ],
-    aqiSectionLabel: 'Paso 2',
+    aqiSectionLabel: 'Sección 2',
     aqiSectionTitle: 'Guía de salud según AQI',
     aqiSectionSubtitle:
       'Toca una categoría para ver orientación de salud y acciones recomendadas en cada nivel.',
@@ -309,27 +305,25 @@ export const educationCopy: Record<AppLanguage, EducationCopy> = {
       'Personas embarazadas',
       'Personas que trabajan o hacen ejercicio intenso al aire libre',
     ],
-    healthSectionLabel: 'Paso 3',
+    healthSectionLabel: 'Sección 3',
     healthSectionTitle: 'Explorador de impacto en la salud',
     healthSectionSubtitle:
       'Arrastra el AQI para ver cómo el PM2.5 estimado afecta mortalidad y visitas a urgencias según estudios publicados.',
     healthExplorer: {
+      healthImpactsHeading: 'Estimaciones de impacto en la salud',
       mortalityTitle: 'Riesgo de mortalidad',
-      mortalitySubtitle: 'Metaanálisis de PM2.5 a corto plazo',
-      erTitle: 'Tasa de visitas a urgencias',
-      erSubtitle: 'Visitas respiratorias vs PM2.5 de dos días; riesgo relativo excesivo',
-      outdoorMaskTitle: 'Eficacia de mascarilla al aire libre',
-      outdoorMaskSubtitle: 'Estimación agrupada al aire libre con uso adecuado',
-      indoorFilterTitle: 'Eficacia de filtro interior',
-      indoorFilterSubtitle: 'Estimación agrupada en interiores con uso y escala adecuados',
-      sourceLink: 'Fuente',
-      pm25Equivalent: 'Equivalente ≈ {value} µg/m³ PM2.5 (umbrales EPA)',
-      pm25Unknown: 'Equivalente PM2.5 no disponible',
+      erTitle: 'Visitas respiratorias a urgencias',
+      protectionEfficacyHeading: 'Eficacia de protección',
+      outdoorMaskLabel: 'Mascarillas al aire libre',
+      indoorFilterLabel: 'Filtración interior',
+      assumptionsTitle: 'Supuestos de apoyo',
+      assumptionsBody:
+        'Mortalidad y urgencias escalan linealmente con el PM₂.₅ (µg/m³) convertido desde el AQI de la EPA. Los valores de protección son estimaciones fijas de la literatura y no cambian con el AQI.',
+      pm25Equivalent: '{value} µg/m³',
+      pm25Unknown: '—',
       sliderHint: 'Arrastra el control de color para explorar distintos niveles de AQI.',
-      footnote:
-        'Los porcentajes de mascarilla y filtro son estimaciones fijas de la literatura y no cambian con el AQI. Mortalidad y urgencias escalan con el PM2.5 estimado.',
     },
-    videoSectionLabel: 'Paso 4',
+    videoSectionLabel: 'Sección 4',
     videoSectionTitle: 'Videos prácticos',
     videoSectionSubtitle:
       'Mira videos rápidos sobre cómo mejorar la calidad del aire interior y reducir la contaminación que entra al hogar.',

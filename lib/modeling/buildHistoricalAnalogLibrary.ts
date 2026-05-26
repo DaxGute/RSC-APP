@@ -3,7 +3,6 @@ import {
   fetchDistinctPipelineTimes,
   fetchSensorReadingsBetweenRecordedTimes,
 } from '../fetchAirQuality';
-import { fetchForecastWindGridRange, pickForecastTimeUtc } from '../forecastWindGrid';
 import { minutesAheadForStep, PROJECTION_FUTURE_STEPS } from '../projectionTimeLabels';
 import { recomputeKrigingFromSensors } from '../recomputeKriging';
 import { HEATMAP_GRID_STEPS } from '../resolveHeatmapGrid';
@@ -11,11 +10,9 @@ import type { SensorPoint } from '../sensorTypes';
 import type { ClarityRow, PurpleAirRow } from '../database.types';
 
 import {
-  createEmptyPm25Grid,
   pm25ValuesToFlat,
   rowsToPm25Grid2D,
   subtractFlat,
-  windSliceToFlatArrays,
   type Pm25Grid2D,
 } from './gridMath';
 import { buildProjectionFeatureVector, type ProjectionFeatureVector } from './projectionFeatures';
@@ -31,8 +28,6 @@ export type HistoricalAnalogSample = {
   timeMs: number;
   features: ProjectionFeatureVector;
   pm25Flat: Float32Array;
-  windU: Float32Array | null;
-  windV: Float32Array | null;
   /** futureDeltaByStep[0] = +1h, … [4] = +5h */
   futureDeltaByStep: Float32Array[];
 };
@@ -46,9 +41,19 @@ export type HistoricalAnalogLibrary = {
   /** Future grids matched per horizon (+1h … +5h) across all anchor attempts. */
   horizonFutureMatchCounts: number[];
   anchorCandidatesConsidered: number;
+  /** Robust median recent slope from sensors (µg/m³ per hour, last 60–120 min). */
+  recentLiveTrendUgPerHour: number;
+  /** Number of sensors used in robust live-trend estimation. */
+  recentLiveTrendSensorCount: number;
+  /** Robust noise estimate (MAD of per-sensor slopes, µg/m³ per hour). */
+  recentLiveTrendNoise: number;
 };
 
 const analogLibraryCache = new Map<string, HistoricalAnalogLibrary>();
+
+export function analogLibraryCacheKey(nowMs: number): string {
+  return `analog3-${Math.floor(nowMs / (10 * 60 * 1000))}`;
+}
 
 export function getCachedAnalogLibrary(cacheKey: string): HistoricalAnalogLibrary | undefined {
   return analogLibraryCache.get(cacheKey);
@@ -158,17 +163,6 @@ function buildPm25GridFromSensors(sensors: SensorPoint[], time: string): Pm25Gri
   return rowsToPm25Grid2D(rows);
 }
 
-function windAtTimeMs(
-  windByTime: Map<string, import('../forecastWindGrid').WindGridPoint[]>,
-  timeMs: number,
-): { u: Float32Array; v: Float32Array } | null {
-  const keys = [...windByTime.keys()];
-  if (keys.length === 0) return null;
-  const iso = pickForecastTimeUtc(keys, timeMs);
-  if (!iso) return null;
-  return windSliceToFlatArrays(windByTime.get(iso));
-}
-
 function computeDeltaCaps(samples: HistoricalAnalogSample[]): number[] {
   const caps: number[] = [];
   for (let step = 0; step < PROJECTION_FUTURE_STEPS; step += 1) {
@@ -191,16 +185,93 @@ function computeDeltaCaps(samples: HistoricalAnalogSample[]): number[] {
   return caps;
 }
 
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function medianAbsoluteDeviation(values: number[]): number {
+  if (values.length === 0) return 0;
+  const med = median(values);
+  const absDev = values.map((v) => Math.abs(v - med));
+  return median(absDev);
+}
+
+function robustSlopeUgPerHour(points: Array<{ timeMs: number; pm25: number }>): number | null {
+  if (points.length < 3) return null;
+  const sorted = [...points].sort((a, b) => a.timeMs - b.timeMs);
+  const slopes: number[] = [];
+  for (let i = 0; i < sorted.length; i += 1) {
+    for (let j = i + 1; j < sorted.length; j += 1) {
+      const dtHours = (sorted[j].timeMs - sorted[i].timeMs) / (60 * 60 * 1000);
+      if (!(dtHours > 0)) continue;
+      slopes.push((sorted[j].pm25 - sorted[i].pm25) / dtHours);
+    }
+  }
+  if (slopes.length === 0) return null;
+  return median(slopes);
+}
+
+function computeRecentLiveTrend(
+  groupedByTime: Map<string, SensorPoint[]>,
+  nowMs: number,
+): {
+  trendUgPerHour: number;
+  sensorCount: number;
+  noiseUgPerHour: number;
+} {
+  const windowStart = nowMs - 120 * 60 * 1000;
+  const sensorSeries = new Map<string, Array<{ timeMs: number; pm25: number }>>();
+
+  for (const [iso, sensors] of groupedByTime.entries()) {
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t) || t < windowStart || t > nowMs) continue;
+    for (const s of sensors) {
+      if (!Number.isFinite(s.pm25)) continue;
+      const key = `${String(s.source)}:${String(s.sensorIndex)}`;
+      const arr = sensorSeries.get(key) ?? [];
+      arr.push({ timeMs: t, pm25: s.pm25 });
+      sensorSeries.set(key, arr);
+    }
+  }
+
+  const slopes: number[] = [];
+  for (const pts of sensorSeries.values()) {
+    const slope = robustSlopeUgPerHour(pts);
+    if (slope == null) continue;
+    slopes.push(slope);
+  }
+  if (slopes.length === 0) {
+    return { trendUgPerHour: 0, sensorCount: 0, noiseUgPerHour: 0 };
+  }
+  const trend = Math.max(-6, Math.min(6, median(slopes)));
+  return {
+    trendUgPerHour: trend,
+    sensorCount: slopes.length,
+    noiseUgPerHour: medianAbsoluteDeviation(slopes),
+  };
+}
+
+type AnchorPlan = {
+  anchorTime: string;
+  anchorMs: number;
+  futureKeys: string[];
+};
+
 export type BuildHistoricalAnalogLibraryResult = {
   library: HistoricalAnalogLibrary;
   errorMessage: string | null;
+  fromCache: boolean;
 };
 
 export type AnalogLibraryProgressCallback = (progress: number, message: string) => void;
 
 /**
- * Builds 7-day historical analogs with precomputed feature vectors and future PM₂.₅ deltas.
- * `onProgress` reports 0..1 within the library build (fetch → grids → analog matching).
+ * Builds 7-day historical analogs with precomputed PM₂.₅ feature vectors and future deltas.
+ * `onProgress` reports 0..1 within the library build (fetch → grids → samples).
  */
 export async function buildHistoricalAnalogLibrary(
   nowMs = Date.now(),
@@ -210,51 +281,47 @@ export async function buildHistoricalAnalogLibrary(
     onProgress?.(Math.max(0, Math.min(1, progress)), message);
   };
 
-  const cacheKey = `analog2-${Math.floor(nowMs / (10 * 60 * 1000))}`;
+  const cacheKey = analogLibraryCacheKey(nowMs);
   const cached = getCachedAnalogLibrary(cacheKey);
   if (cached) {
-    report(1, 'Loaded cached history');
-    return { library: cached, errorMessage: null };
+    report(1, 'Using cached analog library…');
+    return { library: cached, errorMessage: null, fromCache: true };
   }
 
-  report(0.04, 'Loading sensor history…');
+  report(0.05, 'Loading recent sensor history…');
 
   const fromIso = new Date(nowMs - HISTORICAL_HOURS_BACK * 60 * 60 * 1000).toISOString();
   const toIso = new Date(nowMs + minutesAheadForStep(PROJECTION_FUTURE_STEPS)).toISOString();
 
-  const fetchStarted = Date.now();
-  const fetchHeartbeat = setInterval(() => {
-    const elapsed = Date.now() - fetchStarted;
-    const p = 0.04 + Math.min(0.2, (elapsed / 14_000) * 0.2);
-    report(p, 'Loading sensor history…');
-  }, 180);
+  const [timesRes, sensorsRes] = await Promise.all([
+    fetchDistinctPipelineTimes(HISTORICAL_HOURS_BACK),
+    fetchSensorReadingsBetweenRecordedTimes(fromIso, toIso),
+  ]);
 
-  let timesRes: Awaited<ReturnType<typeof fetchDistinctPipelineTimes>>;
-  let sensorsRes: Awaited<ReturnType<typeof fetchSensorReadingsBetweenRecordedTimes>>;
-  let windRes: Awaited<ReturnType<typeof fetchForecastWindGridRange>>;
-  try {
-    [timesRes, sensorsRes, windRes] = await Promise.all([
-      fetchDistinctPipelineTimes(HISTORICAL_HOURS_BACK),
-      fetchSensorReadingsBetweenRecordedTimes(fromIso, toIso),
-      fetchForecastWindGridRange(fromIso, toIso),
-    ]);
-  } finally {
-    clearInterval(fetchHeartbeat);
-  }
-
-  report(0.26, 'Processing snapshots…');
+  report(0.5, 'Loading recent sensor history…');
 
   if (timesRes.error) {
     return {
       library: emptyLibrary(cacheKey, nowMs),
       errorMessage: timesRes.error.message,
+      fromCache: false,
     };
   }
 
   const grouped = groupSensorsByTime(sensorsRes.purpleAir, sensorsRes.clarity);
+  const recentLiveTrend = computeRecentLiveTrend(grouped, nowMs);
   const allTimes = [...new Set([...timesRes.times, ...grouped.keys()])].sort(
     (a, b) => new Date(a).getTime() - new Date(b).getTime(),
   );
+
+  const sensorTimesAsc = allTimes.filter((t) => (grouped.get(t)?.length ?? 0) > 0);
+  const timeKeys: string[] = [];
+  const timesMsSorted: number[] = [];
+  for (const t of sensorTimesAsc) {
+    timeKeys.push(t);
+    timesMsSorted.push(new Date(t).getTime());
+  }
+
   const anchorTimes = subsampleTimes(
     allTimes.filter((t) => {
       const ms = new Date(t).getTime();
@@ -264,76 +331,84 @@ export async function buildHistoricalAnalogLibrary(
     MAX_ANALOG_SAMPLES,
   );
 
-  const timeKeys: string[] = [];
-  const timesMsSorted: number[] = [];
-  const gridByTime = new Map<string, Float32Array>();
+  report(0.55, 'Building analog library…');
 
-  const gridTimes = allTimes.filter((t) => (grouped.get(t)?.length ?? 0) > 0);
-  for (let ti = 0; ti < gridTimes.length; ti += 1) {
-    const t = gridTimes[ti];
-    const sensors = grouped.get(t);
-    if (!sensors || sensors.length === 0) continue;
-    const grid = buildPm25GridFromSensors(sensors, t);
-    if (!grid) continue;
-    const flat = pm25ValuesToFlat(grid.values);
-    timeKeys.push(t);
-    timesMsSorted.push(new Date(t).getTime());
-    gridByTime.set(t, flat);
-    if (ti % 2 === 0 || ti === gridTimes.length - 1) {
-      const frac = gridTimes.length > 0 ? (ti + 1) / gridTimes.length : 1;
-      report(0.26 + frac * 0.36, 'Building PM₂.₅ grids…');
-    }
-  }
-
-  const windByTime = windRes.available ? windRes.byTime : new Map();
-
-  const samples: HistoricalAnalogSample[] = [];
+  const neededTimes = new Set<string>();
+  const anchorPlans: AnchorPlan[] = [];
   const horizonFutureMatchCounts = Array.from({ length: PROJECTION_FUTURE_STEPS }, () => 0);
   let anchorCandidatesConsidered = 0;
-  report(0.64, 'Matching historical analogs…');
 
-  for (let ai = 0; ai < anchorTimes.length; ai += 1) {
-    const anchorTime = anchorTimes[ai];
+  for (const anchorTime of anchorTimes) {
     const anchorMs = new Date(anchorTime).getTime();
-    const anchorFlat = gridByTime.get(anchorTime);
-    if (!anchorFlat) continue;
+    if (!(grouped.get(anchorTime)?.length ?? 0)) continue;
     anchorCandidatesConsidered += 1;
 
-    const futureDeltaByStep: Float32Array[] = [];
+    const futureKeys: string[] = [];
     let complete = true;
     for (let step = 1; step <= PROJECTION_FUTURE_STEPS; step += 1) {
       const targetMs = anchorMs + minutesAheadForStep(step) * 60 * 1000;
       const futureKey = closestTimeKey(timesMsSorted, timeKeys, targetMs);
-      const futureFlat = futureKey ? gridByTime.get(futureKey) : null;
-      if (!futureFlat) {
+      if (!futureKey) {
         complete = false;
         break;
       }
-      horizonFutureMatchCounts[step - 1] += 1;
-      futureDeltaByStep.push(subtractFlat(futureFlat, anchorFlat));
+      futureKeys.push(futureKey);
     }
-    if (!complete || futureDeltaByStep.length !== PROJECTION_FUTURE_STEPS) continue;
+    if (!complete || futureKeys.length !== PROJECTION_FUTURE_STEPS) continue;
 
-    const sensors = grouped.get(anchorTime)!;
-    const pm25Grid = buildPm25GridFromSensors(sensors, anchorTime) ?? createEmptyPm25Grid(anchorTime);
-    const wind = windAtTimeMs(windByTime, anchorMs);
+    for (let step = 0; step < PROJECTION_FUTURE_STEPS; step += 1) {
+      horizonFutureMatchCounts[step] += 1;
+    }
+    neededTimes.add(anchorTime);
+    for (const fk of futureKeys) neededTimes.add(fk);
+    anchorPlans.push({ anchorTime, anchorMs, futureKeys });
+  }
+
+  const neededList = [...neededTimes];
+  const gridByTime = new Map<string, Pm25Grid2D>();
+
+  for (let ti = 0; ti < neededList.length; ti += 1) {
+    const t = neededList[ti];
+    const sensors = grouped.get(t);
+    if (!sensors || sensors.length === 0) continue;
+    const grid = buildPm25GridFromSensors(sensors, t);
+    if (!grid) continue;
+    gridByTime.set(t, grid);
+    if (ti % 3 === 0 || ti === neededList.length - 1) {
+      const frac = neededList.length > 0 ? (ti + 1) / neededList.length : 1;
+      report(0.55 + frac * 0.4, 'Building analog library…');
+    }
+  }
+
+  const samples: HistoricalAnalogSample[] = [];
+
+  for (let ai = 0; ai < anchorPlans.length; ai += 1) {
+    const { anchorTime, anchorMs, futureKeys } = anchorPlans[ai];
+    const anchorGrid = gridByTime.get(anchorTime);
+    if (!anchorGrid) continue;
+    const anchorFlat = pm25ValuesToFlat(anchorGrid.values);
+
+    const futureDeltaByStep: Float32Array[] = [];
+    for (const futureKey of futureKeys) {
+      const futureGrid = gridByTime.get(futureKey);
+      if (!futureGrid) {
+        futureDeltaByStep.length = 0;
+        break;
+      }
+      futureDeltaByStep.push(subtractFlat(pm25ValuesToFlat(futureGrid.values), anchorFlat));
+    }
+    if (futureDeltaByStep.length !== PROJECTION_FUTURE_STEPS) continue;
 
     samples.push({
       time: anchorTime,
       timeMs: anchorMs,
-      features: buildProjectionFeatureVector(pm25Grid, wind?.u ?? null, wind?.v ?? null, anchorMs),
+      features: buildProjectionFeatureVector(anchorGrid, anchorMs),
       pm25Flat: anchorFlat,
-      windU: wind?.u ?? null,
-      windV: wind?.v ?? null,
       futureDeltaByStep,
     });
-    if (ai % 2 === 0 || ai === anchorTimes.length - 1) {
-      const frac = anchorTimes.length > 0 ? (ai + 1) / anchorTimes.length : 1;
-      report(0.64 + frac * 0.32, 'Matching historical analogs…');
-    }
   }
 
-  report(0.98, 'Finalizing library…');
+  report(0.98, 'Building analog library…');
 
   const library: HistoricalAnalogLibrary = {
     samples,
@@ -342,12 +417,16 @@ export async function buildHistoricalAnalogLibrary(
     deltaCapByStep: computeDeltaCaps(samples),
     horizonFutureMatchCounts,
     anchorCandidatesConsidered,
+    recentLiveTrendUgPerHour: recentLiveTrend.trendUgPerHour,
+    recentLiveTrendSensorCount: recentLiveTrend.sensorCount,
+    recentLiveTrendNoise: recentLiveTrend.noiseUgPerHour,
   };
   setCachedAnalogLibrary(cacheKey, library);
 
   return {
     library,
-    errorMessage: sensorsRes.error?.message ?? windRes.errorMessage ?? null,
+    errorMessage: sensorsRes.error?.message ?? null,
+    fromCache: false,
   };
 }
 
@@ -359,5 +438,8 @@ function emptyLibrary(cacheKey: string, nowMs: number): HistoricalAnalogLibrary 
     deltaCapByStep: [25, 25, 25, 25, 25],
     horizonFutureMatchCounts: Array.from({ length: PROJECTION_FUTURE_STEPS }, () => 0),
     anchorCandidatesConsidered: 0,
+    recentLiveTrendUgPerHour: 0,
+    recentLiveTrendSensorCount: 0,
+    recentLiveTrendNoise: 0,
   };
 }

@@ -26,6 +26,8 @@ export type AqiColoredCalendarProps = {
   onVisibleMonthChange?: (monthKey: string) => void;
   /** Day summaries for the visible month (includes live today when provided). */
   onMonthDaySummariesChange?: (monthKey: string, summaries: Map<string, DaySummary>) => void;
+  /** When false, the timeline-selected day uses the same styles as other days. */
+  highlightSelectedDay?: boolean;
   height?: number;
 };
 
@@ -36,6 +38,7 @@ export function AqiColoredCalendar({
   onPickRecordedTime,
   onVisibleMonthChange,
   onMonthDaySummariesChange,
+  highlightSelectedDay = true,
   height = 360,
 }: AqiColoredCalendarProps) {
   const latestTimelineTimeForToday = useMemo(() => {
@@ -187,7 +190,7 @@ export function AqiColoredCalendar({
       const summary = effectiveDaySummaries.get(day);
       const hasRecordedSnapshot = recordedTimeByDay.has(day) || timesByDay.has(day);
       const canSelectDay = hasRecordedSnapshot || (day === todayKey && timelineTimesAsc.length > 0);
-      const isSelected = day === selectedDateKey;
+      const isSelected = highlightSelectedDay && day === selectedDateKey;
       const dayOpacity = opacityForDay(day);
       if (summary) {
         out[day] = {
@@ -256,6 +259,7 @@ export function AqiColoredCalendar({
     daysArePressable,
     opacityForDay,
     recordedTimeByDay,
+    highlightSelectedDay,
     selectedDateKey,
     timelineTimesAsc.length,
     timesByDay,

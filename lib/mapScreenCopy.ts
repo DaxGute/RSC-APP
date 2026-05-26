@@ -39,6 +39,7 @@ export type MapScreenCopy = {
   monthTickFifteenth: (monthAbbr: string) => string;
   timelineNow: string;
   timelineYesterday: string;
+  timelineDragHint: string;
   openTimeFilterMenu: string;
   insufficientDataTitle: string;
   insufficientDataSubtitle: string;
@@ -94,6 +95,7 @@ export const mapScreenCopy: Record<AppLanguage, MapScreenCopy> = {
     monthTickFifteenth: (monthAbbr) => `${monthAbbr} 15th`,
     timelineNow: 'now',
     timelineYesterday: 'yesterday',
+    timelineDragHint: '(Drag for other times)',
     openTimeFilterMenu: 'Open time filter menu',
     insufficientDataTitle: 'Insufficient Data',
     insufficientDataSubtitle: 'No sensor readings for this time.',
@@ -155,6 +157,7 @@ export const mapScreenCopy: Record<AppLanguage, MapScreenCopy> = {
     monthTickFifteenth: (monthAbbr) => `${monthAbbr} 15`,
     timelineNow: 'ahora',
     timelineYesterday: 'ayer',
+    timelineDragHint: '(Arrastra para ver otros horarios)',
     openTimeFilterMenu: 'Abrir menú de filtro de tiempo',
     insufficientDataTitle: 'Datos insuficientes',
     insufficientDataSubtitle: 'No hay lecturas de sensores para este momento.',

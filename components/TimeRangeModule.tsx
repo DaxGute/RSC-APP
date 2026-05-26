@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useMemo, useId, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   LayoutChangeEvent,
@@ -38,6 +38,8 @@ type TimeRangeModuleProps = {
   orientation?: 'horizontal' | 'vertical';
   topLabel?: string | null;
   markerLabel?: string | null;
+  /** Shown above the marker until the user scrubs the timeline for the first time. */
+  scrubHintLabel?: string | null;
   /** Fires when the user begins a scrub gesture (e.g. to dismiss an overlay menu). */
   onScrubBegin?: () => void;
 };
@@ -45,6 +47,8 @@ type TimeRangeModuleProps = {
 const CHART_HEIGHT = 72;
 const CHART_PADDING_X = 8;
 const CHART_PADDING_Y = 8;
+const SCRUB_MARKER_COLOR = '#dc2626';
+const SCRUB_HINT_LABEL_WIDTH = 200;
 
 /** Scrub chart line coloring: EPA index bands (Hazardous capped at display max). */
 const CHART_AQI_BANDS = AQI_CATEGORY_BANDS.map((band, index) => ({
@@ -145,14 +149,18 @@ export function TimeRangeModule({
   orientation = 'horizontal',
   topLabel = 'now',
   markerLabel = null,
+  scrubHintLabel = null,
   onScrubBegin,
 }: TimeRangeModuleProps) {
   const svgUid = useId().replace(/:/g, '');
   const [layoutW, setLayoutW] = useState(0);
   const [layoutH, setLayoutH] = useState(0);
   const [dragX, setDragX] = useState<number | null>(null);
+  const [showScrubHint, setShowScrubHint] = useState(true);
   const dragXRef = useRef<number | null>(null);
   const lastPreviewTimeRef = useRef<string | null>(null);
+
+  const dismissScrubHint = () => setShowScrubHint(false);
 
   const normalized = useMemo(() => {
     const clean = points.filter((p) => Number.isFinite(p.avgAqi));
@@ -268,6 +276,7 @@ export function TimeRangeModule({
         onStartShouldSetPanResponderCapture: () => active,
         onMoveShouldSetPanResponderCapture: () => active,
         onPanResponderGrant: (e) => {
+          dismissScrubHint();
           onScrubBegin?.();
           const mainRaw = orientation === 'vertical' ? e.nativeEvent.locationY : e.nativeEvent.locationX;
           const main = clamp(
@@ -327,13 +336,28 @@ export function TimeRangeModule({
           lastPreviewTimeRef.current = null;
         },
       }),
-    [active, layoutH, layoutW, normalized.values, onCommitTime, onPreviewTime, onScrubBegin, orientation],
+    [
+      active,
+      layoutH,
+      layoutW,
+      normalized.values,
+      onCommitTime,
+      onPreviewTime,
+      onScrubBegin,
+      orientation,
+    ],
   );
 
   const markerMain = dragX ?? (orientation === 'vertical' ? selectedPos?.y : selectedPos?.x);
   const markerLabelWidth = 88;
   const markerLabelLeft =
     markerMain == null ? 0 : clamp(markerMain - markerLabelWidth / 2, 0, Math.max(0, layoutW - markerLabelWidth));
+  const scrubHintLabelLeft =
+    markerMain == null
+      ? 0
+      : clamp(markerMain - SCRUB_HINT_LABEL_WIDTH / 2, 0, Math.max(0, layoutW - SCRUB_HINT_LABEL_WIDTH));
+  const showScrubHintAboveMarker =
+    showScrubHint && scrubHintLabel != null && markerMain != null && markerLabel != null;
 
   const onLayout = (e: LayoutChangeEvent) => {
     const w = chartLength ?? e.nativeEvent.layout.width;
@@ -392,10 +416,25 @@ export function TimeRangeModule({
             {topLabel}
           </Text>
         ) : null}
+        {showScrubHintAboveMarker ? (
+          <Text
+            style={[
+              styles.scrubHintLabel,
+              active && styles.scrubHintLabelActive,
+              orientation === 'vertical'
+                ? { top: markerMain - 24, left: CHART_PADDING_X + 2, width: SCRUB_HINT_LABEL_WIDTH }
+                : { left: scrubHintLabelLeft },
+            ]}
+            numberOfLines={2}
+          >
+            {scrubHintLabel}
+          </Text>
+        ) : null}
         {markerMain != null && markerLabel ? (
           <Text
             style={[
               styles.markerLabel,
+              active && styles.markerLabelActive,
               !active && styles.markLabelDisabled,
               orientation === 'vertical'
                 ? { top: markerMain - 8, left: CHART_PADDING_X + 2 }
@@ -550,8 +589,8 @@ export function TimeRangeModule({
               x2={orientation === 'vertical' ? layoutW - CHART_PADDING_X + 1 : markerMain}
               y1={orientation === 'vertical' ? markerMain : CHART_PADDING_Y - 1}
               y2={orientation === 'vertical' ? markerMain : CHART_HEIGHT - CHART_PADDING_Y + 1}
-              stroke={active ? '#1e293b' : '#94a3b8'}
-              strokeWidth={2}
+              stroke={active ? SCRUB_MARKER_COLOR : '#94a3b8'}
+              strokeWidth={3.5}
               strokeDasharray="3 4"
             />
           ) : null}
@@ -620,6 +659,7 @@ const styles = StyleSheet.create({
     width: '100%',
     height: CHART_HEIGHT,
     position: 'relative',
+    overflow: 'visible',
   },
   nowLabel: {
     position: 'absolute',
@@ -650,6 +690,20 @@ const styles = StyleSheet.create({
     color: '#334155',
     fontVariant: ['tabular-nums'],
   },
+  scrubHintLabel: {
+    position: 'absolute',
+    top: -38,
+    width: SCRUB_HINT_LABEL_WIDTH,
+    textAlign: 'center',
+    zIndex: 2,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748b',
+    lineHeight: 14,
+  },
+  scrubHintLabelActive: {
+    color: SCRUB_MARKER_COLOR,
+  },
   markerLabel: {
     position: 'absolute',
     top: -18,
@@ -660,6 +714,9 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#0f172a',
     fontVariant: ['tabular-nums'],
+  },
+  markerLabelActive: {
+    color: SCRUB_MARKER_COLOR,
   },
   markLabelDisabled: {
     color: '#94a3b8',

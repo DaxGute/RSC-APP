@@ -491,8 +491,9 @@ const styles = StyleSheet.create({
   },
   collapsedTitle: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '800',
+    lineHeight: 17,
     paddingRight: 8,
   },
   expandedLayer: {
@@ -534,14 +535,16 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   levelLabel: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '800',
+    lineHeight: 17,
     textAlign: 'center',
   },
   levelRange: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     marginTop: 4,
+    lineHeight: 13,
     textAlign: 'center',
   },
   levelRight: {

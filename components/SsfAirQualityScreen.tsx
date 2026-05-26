@@ -31,7 +31,6 @@ import { AlertLocationSelectionBanner } from './AlertLocationSelectionBanner';
 import { AqiPanel } from './AqiPanel';
 import { SsfMap, type SsfMapHandle } from './SsfMap';
 import { TimeRangeModule } from './TimeRangeModule';
-import { ModelProjectionMap } from './ModelProjectionMap';
 import { TimelineCalendarModal } from './TimelineCalendarModal';
 import { useAppLanguage } from '../contexts/LanguageProvider';
 import {
@@ -339,6 +338,8 @@ export type SsfAirQualityScreenProps = {
   insufficientData: boolean;
   liveAverageAqi: number | null;
   averageAqiTimeseries: Array<{ time: string; avgAqi: number }>;
+  modelProjectionOpen: boolean;
+  onModelProjectionOpenChange: (open: boolean) => void;
 };
 
 export function SsfAirQualityScreen({
@@ -355,6 +356,8 @@ export function SsfAirQualityScreen({
   insufficientData,
   liveAverageAqi,
   averageAqiTimeseries,
+  modelProjectionOpen,
+  onModelProjectionOpenChange,
 }: SsfAirQualityScreenProps) {
   const { language } = useAppLanguage();
   const copy = mapScreenCopy[language];
@@ -392,8 +395,10 @@ export function SsfAirQualityScreen({
   const mapRef = useRef<SsfMapHandle>(null);
   const lastPanelTouchMsRef = useRef(0);
   const [openReminderModalSignal, setOpenReminderModalSignal] = useState(0);
-  const [modelProjectionOpen, setModelProjectionOpen] = useState(false);
   const [modelProjectionPending, setModelProjectionPending] = useState(false);
+  useEffect(() => {
+    if (!modelProjectionOpen) setModelProjectionPending(false);
+  }, [modelProjectionOpen]);
   const [isSelectingAlertLocation, setIsSelectingAlertLocation] = useState(false);
   const pendingOpenReminderRef = useRef(false);
   const isSelectingAlertLocationRef = useRef(false);
@@ -1041,11 +1046,12 @@ export function SsfAirQualityScreen({
     if (!viewingLive || timelineLoading || loading) return;
     if (mapKriging.length === 0) return;
     setModelProjectionPending(false);
-    setModelProjectionOpen(true);
+    onModelProjectionOpenChange(true);
   }, [
     loading,
     mapKriging.length,
     modelProjectionPending,
+    onModelProjectionOpenChange,
     selectedDayLabel,
     timeFilterMode,
     timelineLoading,
@@ -1527,6 +1533,7 @@ export function SsfAirQualityScreen({
               selectedPosition={effectiveSelectedPosition}
               ticks={chartData.ticks}
               markerLabel={scrubMarkerLabel}
+              scrubHintLabel={copy.timelineDragHint}
               onScrubBegin={dismissTimeFilterIfOpen}
               topLabel={
                 timeFilterMode === 'Month'
@@ -1570,18 +1577,6 @@ export function SsfAirQualityScreen({
           onSelectRecordedTime(recordedTime);
         }}
         liveAverageAqi={liveAverageAqi}
-      />
-      <ModelProjectionMap
-        visible={modelProjectionOpen}
-        onClose={() => {
-          setModelProjectionOpen(false);
-          setModelProjectionPending(false);
-        }}
-        mapKriging={mapKriging}
-        mapSensors={mapSensors}
-        mapRegion={mapRegion}
-        timelineTimesAsc={timelineTimesAsc}
-        viewingLive={viewingLive}
       />
     </View>
   );

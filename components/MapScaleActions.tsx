@@ -12,6 +12,8 @@ export type MapScaleActionsProps = {
   onZoomOut?: () => void;
   canZoomIn?: boolean;
   canZoomOut?: boolean;
+  /** When set, used instead of safe-area-based top offset (nested map panels). */
+  overlayTop?: number;
 };
 
 /** Alert, Model, and zoom controls in the top-left map overlay. */
@@ -22,6 +24,7 @@ export function MapScaleActions({
   onZoomOut,
   canZoomIn = true,
   canZoomOut = true,
+  overlayTop,
 }: MapScaleActionsProps) {
   const { language } = useAppLanguage();
   const copy = mapScreenCopy[language];
@@ -36,7 +39,7 @@ export function MapScaleActions({
       style={[
         styles.wrap,
         {
-          top: Math.max(insets.top, 6) + 8,
+          top: overlayTop ?? Math.max(insets.top, 6) + 8,
           left: 8,
         },
       ]}
