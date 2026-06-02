@@ -22,6 +22,8 @@ export type AqiColoredCalendarProps = {
   timelineIndex: number;
   liveAverageAqi: number | null;
   onPickRecordedTime?: (recordedTime: string) => void;
+  /** When set, visible month is controlled by the parent and does not follow timeline selection. */
+  monthKey?: string;
   /** When set, parent is notified when the visible month changes (YYYY-MM). */
   onVisibleMonthChange?: (monthKey: string) => void;
   /** Day summaries for the visible month (includes live today when provided). */
@@ -36,6 +38,7 @@ export function AqiColoredCalendar({
   timelineIndex,
   liveAverageAqi,
   onPickRecordedTime,
+  monthKey,
   onVisibleMonthChange,
   onMonthDaySummariesChange,
   highlightSelectedDay = true,
@@ -98,8 +101,17 @@ export function AqiColoredCalendar({
     return `${now.getFullYear()}-${`${now.getMonth() + 1}`.padStart(2, '0')}`;
   }, []);
 
-  const activeMonthKey = visibleMonth ?? initialDate.slice(0, 7);
+  const isMonthControlled = monthKey != null;
+  const activeMonthKey = isMonthControlled ? monthKey : (visibleMonth ?? initialDate.slice(0, 7));
   const activeMonthDate = `${activeMonthKey}-01`;
+
+  const setActiveMonthKey = useCallback(
+    (nextMonthKey: string) => {
+      if (!isMonthControlled) setVisibleMonth(nextMonthKey);
+      onVisibleMonthChange?.(nextMonthKey);
+    },
+    [isMonthControlled, onVisibleMonthChange],
+  );
 
   useEffect(() => {
     onVisibleMonthChange?.(activeMonthKey);
@@ -267,8 +279,9 @@ export function AqiColoredCalendar({
   ]);
 
   useEffect(() => {
+    if (isMonthControlled) return;
     setVisibleMonth(initialDate.slice(0, 7));
-  }, [initialDate]);
+  }, [initialDate, isMonthControlled]);
 
   useEffect(() => {
     return () => {
@@ -387,7 +400,7 @@ export function AqiColoredCalendar({
           disableAllTouchEventsForDisabledDays
           markingType="custom"
           markedDates={markedDates}
-          onMonthChange={(m) => setVisibleMonth(`${m.year}-${`${m.month}`.padStart(2, '0')}`)}
+          onMonthChange={(m) => setActiveMonthKey(`${m.year}-${`${m.month}`.padStart(2, '0')}`)}
           onDayPress={daysArePressable ? (day) => handleDayPress(day.dateString) : undefined}
           theme={{
             calendarBackground: '#f8fafc',

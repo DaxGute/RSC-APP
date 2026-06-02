@@ -361,6 +361,7 @@ export function AqiGraphScreen({
             timelineIndex={timelineIndex}
             liveAverageAqi={liveAverageAqi}
             highlightSelectedDay={false}
+            monthKey={visibleMonthKey}
             onVisibleMonthChange={handleVisibleMonthChange}
             onMonthDaySummariesChange={handleMonthDaySummariesChange}
           />

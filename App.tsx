@@ -1,3 +1,8 @@
+/**
+ * Root shell: three bottom tabs (map, graph, education) over shared SSF air-quality data.
+ * Tabs stay mounted but hidden so map/graph state survives tab switches.
+ */
+
 import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -21,8 +26,10 @@ import {
   ROOT_TAB_BAR_TOP_RADIUS,
 } from './lib/constants/appLayout';
 
+/** Bottom navigation destinations. */
 type RootTab = 'map' | 'graph' | 'education';
 
+/** Tab screens, overlay map modal, and tab bar. Requires SafeAreaProvider ancestor. */
 function AppContent() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<RootTab>('map');
@@ -41,6 +48,7 @@ function AppContent() {
     liveAverageAqi,
     averageAqiTimeseries,
   } = useSsfAirQuality();
+  // Splash only on the map tab so graph/education stay usable while data loads.
   const showMapLoadSplash = activeTab === 'map' && (loading || timelineLoading);
   const [modelProjectionOpen, setModelProjectionOpen] = useState(false);
   const mapRegion = useMemo(() => regionFromSensorData(sensors, kriging), [sensors, kriging]);
@@ -48,6 +56,7 @@ function AppContent() {
     setModelProjectionOpen(open);
   }, []);
 
+  // Full-screen projection map is map-tab UI; close it when leaving that context.
   useEffect(() => {
     setModelProjectionOpen(false);
   }, [activeTab]);
@@ -55,7 +64,11 @@ function AppContent() {
   return (
     <View style={styles.appRoot}>
       <View style={styles.screenContainer}>
-        {activeTab === 'map' ? (
+        {/* Stacked panes: hidden tabs keep opacity 0 and ignore touches but stay mounted. */}
+        <View
+          style={[styles.tabPane, activeTab === 'map' ? styles.tabPaneVisible : styles.tabPaneHidden]}
+          pointerEvents={activeTab === 'map' ? 'auto' : 'none'}
+        >
           <SsfAirQualityScreen
             sensors={sensors}
             kriging={kriging}
@@ -73,7 +86,11 @@ function AppContent() {
             modelProjectionOpen={modelProjectionOpen}
             onModelProjectionOpenChange={handleModelProjectionOpenChange}
           />
-        ) : activeTab === 'graph' ? (
+        </View>
+        <View
+          style={[styles.tabPane, activeTab === 'graph' ? styles.tabPaneVisible : styles.tabPaneHidden]}
+          pointerEvents={activeTab === 'graph' ? 'auto' : 'none'}
+        >
           <AqiGraphScreen
             points={averageAqiTimeseries}
             timelineTimesAsc={timelineTimesAsc}
@@ -81,9 +98,13 @@ function AppContent() {
             liveAverageAqi={liveAverageAqi}
             loading={timelineLoading}
           />
-        ) : (
+        </View>
+        <View
+          style={[styles.tabPane, activeTab === 'education' ? styles.tabPaneVisible : styles.tabPaneHidden]}
+          pointerEvents={activeTab === 'education' ? 'auto' : 'none'}
+        >
           <EducationHubScreen />
-        )}
+        </View>
       </View>
       <ModelProjectionMap
         visible={modelProjectionOpen}
@@ -136,6 +157,7 @@ function AppContent() {
   );
 }
 
+/** Providers, Supabase anonymous auth, and native splash teardown. */
 export default function App() {
   const splashHiddenRef = useRef(false);
 
@@ -145,6 +167,7 @@ export default function App() {
     });
   }, []);
 
+  // Hide Expo splash once on mount (Strict Mode-safe via ref).
   useEffect(() => {
     if (splashHiddenRef.current) return;
     splashHiddenRef.current = true;
@@ -169,7 +192,26 @@ export default function App() {
 const styles = StyleSheet.create({
   gestureRoot: { flex: 1 },
   appRoot: { flex: 1, position: 'relative' },
-  screenContainer: { flex: 1, paddingBottom: ROOT_TAB_BAR_RESERVED_HEIGHT },
+  screenContainer: {
+    flex: 1,
+    position: 'relative',
+  },
+  // Absolute stack leaves room for the floating tab bar at the bottom.
+  tabPane: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: ROOT_TAB_BAR_RESERVED_HEIGHT,
+  },
+  tabPaneVisible: {
+    opacity: 1,
+    zIndex: 1,
+  },
+  tabPaneHidden: {
+    opacity: 0,
+    zIndex: 0,
+  },
   tabBar: {
     position: 'absolute',
     left: 0,

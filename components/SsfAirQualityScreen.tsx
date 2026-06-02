@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -41,7 +41,7 @@ import {
   monthAbbrForChart,
 } from '../lib/mapScreenCopy';
 
-const FILTER_MIN_YEAR = 2021;
+const FILTER_MIN_YEAR = 2019;
 const BOTTOM_TAB_BAR_RESERVE = 6;
 const CALLOUT_WIDTH = 300;
 const CALLOUT_HEIGHT_ESTIMATE = 210;
@@ -64,6 +64,21 @@ const TIME_FILTER_MAIN_ENTER_OFFSET_Y = -10;
 const TIME_FILTER_SUB_SLIDE_OFFSET_X = 16;
 const TIME_FILTER_SUB_SWITCH_OUT_MS = 140;
 const TIME_FILTER_SUB_SWITCH_IN_MS = 190;
+const TIME_FILTER_DROPDOWN_ITEM_HEIGHT = 34;
+const TIME_FILTER_SUBMENU_VIEWPORT_HEIGHT = 220;
+const TIME_FILTER_SUBMENU_CONTENT_PADDING = 4;
+
+function scrollOffsetForSubmenuIndex(index: number, itemCount: number): number {
+  if (index < 0 || itemCount <= 0) return 0;
+  const padding = TIME_FILTER_SUBMENU_CONTENT_PADDING;
+  const viewport = TIME_FILTER_SUBMENU_VIEWPORT_HEIGHT;
+  const itemStride = TIME_FILTER_DROPDOWN_ITEM_HEIGHT;
+  const contentHeight = padding * 2 + itemCount * itemStride;
+  const maxScroll = Math.max(0, contentHeight - viewport);
+  const itemTop = padding + index * itemStride;
+  const centered = itemTop - (viewport - itemStride) / 2;
+  return Math.min(Math.max(0, centered), maxScroll);
+}
 
 function resolveRowAqi(row: DailySensorAqiRow): number | null {
   if (row.aqi != null && Number.isFinite(row.aqi)) return row.aqi;
@@ -407,6 +422,8 @@ export function SsfAirQualityScreen({
   const mainDropdownTranslateY = useRef(new Animated.Value(0)).current;
   const subDropdownOpacity = useRef(new Animated.Value(0)).current;
   const subDropdownTranslateX = useRef(new Animated.Value(0)).current;
+  const daySubmenuScrollRef = useRef<ScrollView | null>(null);
+  const monthSubmenuScrollRef = useRef<ScrollView | null>(null);
   const timeFilterRunningAnimRef = useRef<Animated.CompositeAnimation | null>(null);
   const timeFilterCloseTokenRef = useRef(0);
   const timeFilterSwitchTokenRef = useRef(0);
@@ -632,62 +649,6 @@ export function SsfAirQualityScreen({
     openNotificationSettings();
   }, [openNotificationSettings, selected]);
 
-  const playTimeFilterOpenAnimation = useCallback(() => {
-    timeFilterRunningAnimRef.current?.stop();
-    const hasSub = dayMenuOpenRef.current || monthMenuOpenRef.current;
-    const easingOut = Easing.out(Easing.cubic);
-
-    mainDropdownOpacity.setValue(0);
-    mainDropdownTranslateY.setValue(TIME_FILTER_MAIN_ENTER_OFFSET_Y);
-    if (hasSub) {
-      subDropdownOpacity.setValue(0);
-      subDropdownTranslateX.setValue(TIME_FILTER_SUB_SLIDE_OFFSET_X);
-    } else {
-      subDropdownOpacity.setValue(1);
-      subDropdownTranslateX.setValue(0);
-    }
-
-    const mainEnter = Animated.parallel([
-      Animated.timing(mainDropdownOpacity, {
-        toValue: 1,
-        duration: TIME_FILTER_MAIN_IN_MS,
-        easing: easingOut,
-        useNativeDriver: true,
-      }),
-      Animated.timing(mainDropdownTranslateY, {
-        toValue: 0,
-        duration: TIME_FILTER_MAIN_IN_MS,
-        easing: easingOut,
-        useNativeDriver: true,
-      }),
-    ]);
-
-    const composite: Animated.CompositeAnimation = hasSub
-      ? Animated.sequence([
-          mainEnter,
-          Animated.parallel([
-            Animated.timing(subDropdownOpacity, {
-              toValue: 1,
-              duration: TIME_FILTER_SUB_IN_MS,
-              easing: easingOut,
-              useNativeDriver: true,
-            }),
-            Animated.timing(subDropdownTranslateX, {
-              toValue: 0,
-              duration: TIME_FILTER_SUB_IN_MS,
-              easing: easingOut,
-              useNativeDriver: true,
-            }),
-          ]),
-        ])
-      : mainEnter;
-
-    timeFilterRunningAnimRef.current = composite;
-    composite.start(({ finished }) => {
-      if (timeFilterRunningAnimRef.current === composite) timeFilterRunningAnimRef.current = null;
-    });
-  }, [mainDropdownOpacity, mainDropdownTranslateY, subDropdownOpacity, subDropdownTranslateX]);
-
   const closeTimeFilterMenu = useCallback(
     (afterClose?: () => void) => {
       timeFilterRunningAnimRef.current?.stop();
@@ -806,13 +767,6 @@ export function SsfAirQualityScreen({
     [subDropdownOpacity, subDropdownTranslateX],
   );
 
-  useEffect(() => {
-    if (timeFilterMenuOpen && !prevTimeFilterMenuOpenRef.current) {
-      playTimeFilterOpenAnimation();
-    }
-    prevTimeFilterMenuOpenRef.current = timeFilterMenuOpen;
-  }, [timeFilterMenuOpen, playTimeFilterOpenAnimation]);
-
   const selectedCalloutPlacement = useMemo<'above' | 'below'>(() => {
     if (!selected?.screenPointY) return 'above';
     const requiredTopSpace = CALLOUT_HEIGHT_ESTIMATE + 24;
@@ -835,7 +789,7 @@ export function SsfAirQualityScreen({
   const monthOptions = useMemo(() => {
     const now = new Date();
     const out: string[] = ['This Month'];
-    // From last month backwards to Jan 2021.
+    // From last month backwards to Jan 2019.
     let d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     while (d.getFullYear() >= FILTER_MIN_YEAR) {
       const yy = `${d.getFullYear()}`.slice(-2);
@@ -850,6 +804,110 @@ export function SsfAirQualityScreen({
     for (let i = 2; i <= 7; i += 1) out.push(`${i} Days Ago`);
     return out;
   }, []);
+
+  const scrollSubmenuToCurrentPreset = useCallback(() => {
+    if (timeFilterMode === 'Day' && dayMenuOpenRef.current) {
+      const idx = dayOptions.indexOf(selectedDayLabel);
+      if (idx < 0) return;
+      daySubmenuScrollRef.current?.scrollTo({
+        y: scrollOffsetForSubmenuIndex(idx, dayOptions.length),
+        animated: false,
+      });
+      return;
+    }
+    if (timeFilterMode === 'Month' && monthMenuOpenRef.current) {
+      const idx = monthOptions.indexOf(selectedMonthLabel);
+      if (idx < 0) return;
+      monthSubmenuScrollRef.current?.scrollTo({
+        y: scrollOffsetForSubmenuIndex(idx, monthOptions.length),
+        animated: false,
+      });
+    }
+  }, [dayOptions, monthOptions, selectedDayLabel, selectedMonthLabel, timeFilterMode]);
+
+  const playTimeFilterOpenAnimation = useCallback(
+    (withSubmenu: boolean) => {
+      timeFilterRunningAnimRef.current?.stop();
+      const hasSub = withSubmenu;
+      const easingOut = Easing.out(Easing.cubic);
+
+      mainDropdownOpacity.setValue(0);
+      mainDropdownTranslateY.setValue(TIME_FILTER_MAIN_ENTER_OFFSET_Y);
+      if (hasSub) {
+        subDropdownOpacity.setValue(0);
+        subDropdownTranslateX.setValue(TIME_FILTER_SUB_SLIDE_OFFSET_X);
+      } else {
+        subDropdownOpacity.setValue(1);
+        subDropdownTranslateX.setValue(0);
+      }
+
+      const mainEnter = Animated.parallel([
+        Animated.timing(mainDropdownOpacity, {
+          toValue: 1,
+          duration: TIME_FILTER_MAIN_IN_MS,
+          easing: easingOut,
+          useNativeDriver: true,
+        }),
+        Animated.timing(mainDropdownTranslateY, {
+          toValue: 0,
+          duration: TIME_FILTER_MAIN_IN_MS,
+          easing: easingOut,
+          useNativeDriver: true,
+        }),
+      ]);
+
+      const subEnter = Animated.parallel([
+        Animated.timing(subDropdownOpacity, {
+          toValue: 1,
+          duration: TIME_FILTER_SUB_IN_MS,
+          easing: easingOut,
+          useNativeDriver: true,
+        }),
+        Animated.timing(subDropdownTranslateX, {
+          toValue: 0,
+          duration: TIME_FILTER_SUB_IN_MS,
+          easing: easingOut,
+          useNativeDriver: true,
+        }),
+      ]);
+
+      const composite: Animated.CompositeAnimation = hasSub
+        ? Animated.sequence([mainEnter, subEnter])
+        : mainEnter;
+
+      timeFilterRunningAnimRef.current = composite;
+      composite.start(({ finished }) => {
+        if (timeFilterRunningAnimRef.current === composite) timeFilterRunningAnimRef.current = null;
+        if (finished && hasSub) {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              scrollSubmenuToCurrentPreset();
+            });
+          });
+        }
+      });
+    },
+    [mainDropdownOpacity, mainDropdownTranslateY, scrollSubmenuToCurrentPreset, subDropdownOpacity, subDropdownTranslateX],
+  );
+
+  const openTimeFilterMenuToCurrentPreset = useCallback(() => {
+    if (timeFilterMode === 'Month') {
+      setMonthMenuOpen(true);
+      setDayMenuOpen(false);
+    } else {
+      setDayMenuOpen(true);
+      setMonthMenuOpen(false);
+    }
+    setTimeFilterMenuOpen(true);
+  }, [timeFilterMode]);
+
+  useLayoutEffect(() => {
+    if (timeFilterMenuOpen && !prevTimeFilterMenuOpenRef.current) {
+      const withSubmenu = dayMenuOpen || monthMenuOpen;
+      playTimeFilterOpenAnimation(withSubmenu);
+    }
+    prevTimeFilterMenuOpenRef.current = timeFilterMenuOpen;
+  }, [dayMenuOpen, monthMenuOpen, playTimeFilterOpenAnimation, timeFilterMenuOpen]);
 
   const chartData = useMemo(() => {
     if (timeFilterMode === 'Day' && selectedDayLabel === 'Today') {
@@ -1264,17 +1322,7 @@ export function SsfAirQualityScreen({
               onPress={() => {
                 const nextOpen = !timeFilterMenuOpen;
                 if (nextOpen) {
-                  setTimeFilterMenuOpen(true);
-                  if (timeFilterMode === 'Month') {
-                    setMonthMenuOpen(true);
-                    setDayMenuOpen(false);
-                  } else if (timeFilterMode === 'Day') {
-                    setDayMenuOpen(true);
-                    setMonthMenuOpen(false);
-                  } else {
-                    setMonthMenuOpen(false);
-                    setDayMenuOpen(false);
-                  }
+                  openTimeFilterMenuToCurrentPreset();
                 } else {
                   closeTimeFilterMenu();
                 }
@@ -1380,6 +1428,7 @@ export function SsfAirQualityScreen({
                     ]}
                   >
                     <ScrollView
+                      ref={daySubmenuScrollRef}
                       style={styles.subDropdownScroll}
                       contentContainerStyle={styles.subDropdownScrollContent}
                       showsVerticalScrollIndicator
@@ -1459,6 +1508,7 @@ export function SsfAirQualityScreen({
                     ]}
                   >
                     <ScrollView
+                      ref={monthSubmenuScrollRef}
                       style={styles.subDropdownScroll}
                       contentContainerStyle={styles.subDropdownScrollContent}
                       showsVerticalScrollIndicator
