@@ -157,23 +157,21 @@ export type HourlySlotAverage = {
 };
 
 /**
- * For each local hour, average all readings from that hour across the rolling last
- * `ROLLING_WEEK_DAYS` days (inclusive of today).
+ * For each local hour, average the rolling 7-day 10-minute slot means in that hour
+ * (see `computeRollingWeekTenMinuteAverages`).
  */
 export function computeRollingWeekHourlyAverages(
   pairs: AvgAqiPoint[],
   now = new Date(),
 ): HourlySlotAverage[] {
-  const dayKeys = rollingDayKeysLocal(now, ROLLING_WEEK_DAYS);
-  const dayKeySet = new Set(dayKeys);
+  const slots = computeRollingWeekTenMinuteAverages(pairs, now);
   const valuesByHour: number[][] = Array.from({ length: 24 }, () => []);
 
-  for (const p of pairs) {
-    const d = new Date(p.time);
+  for (const slot of slots) {
+    if (slot.daySampleCount === 0 || !Number.isFinite(slot.avgAqi)) continue;
+    const d = new Date(slot.time);
     if (!Number.isFinite(d.getTime())) continue;
-    if (!dayKeySet.has(dateKeyLocal(d))) continue;
-    if (!Number.isFinite(p.avgAqi)) continue;
-    valuesByHour[d.getHours()].push(p.avgAqi);
+    valuesByHour[d.getHours()].push(slot.avgAqi);
   }
 
   return valuesByHour.map((values, hour) => ({

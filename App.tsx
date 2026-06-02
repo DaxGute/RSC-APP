@@ -11,12 +11,12 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
-import { AqiGraphScreen } from './components/AqiGraphScreen';
-import { EducationHubScreen } from './components/EducationHubScreen';
-import { GlobalLanguageSwitch } from './components/GlobalLanguageSwitch';
-import { InitialLoadSplash } from './components/InitialLoadSplash';
-import { ModelProjectionMap } from './components/ModelProjectionMap';
-import { SsfAirQualityScreen } from './components/SsfAirQualityScreen';
+import { AqiGraphScreen } from './components/graph/AqiGraphScreen';
+import { EducationHubScreen } from './components/education/EducationHubScreen';
+import { GlobalLanguageSwitch } from './components/shell/GlobalLanguageSwitch';
+import { InitialLoadSplash } from './components/shell/InitialLoadSplash';
+import { ModelProjectionMap } from './components/map/projection/ModelProjectionMap';
+import { SsfAirQualityScreen } from './components/map/SsfAirQualityScreen';
 import { regionFromSensorData } from './lib/mapRegionFromData';
 import { LanguageProvider } from './contexts/LanguageProvider';
 import { useSsfAirQuality } from './hooks/useSsfAirQuality';
@@ -47,6 +47,8 @@ function AppContent() {
     insufficientData,
     liveAverageAqi,
     averageAqiTimeseries,
+    purpleAir,
+    clarity,
   } = useSsfAirQuality();
   // Splash only on the map tab so graph/education stay usable while data loads.
   const showMapLoadSplash = activeTab === 'map' && (loading || timelineLoading);
@@ -81,7 +83,6 @@ function AppContent() {
             viewingLive={viewingLive}
             timelineLoading={timelineLoading}
             insufficientData={insufficientData}
-            liveAverageAqi={liveAverageAqi}
             averageAqiTimeseries={averageAqiTimeseries}
             modelProjectionOpen={modelProjectionOpen}
             onModelProjectionOpenChange={handleModelProjectionOpenChange}
@@ -92,7 +93,8 @@ function AppContent() {
           pointerEvents={activeTab === 'graph' ? 'auto' : 'none'}
         >
           <AqiGraphScreen
-            points={averageAqiTimeseries}
+            purpleAir={purpleAir}
+            clarity={clarity}
             timelineTimesAsc={timelineTimesAsc}
             timelineIndex={timelineIndex}
             liveAverageAqi={liveAverageAqi}

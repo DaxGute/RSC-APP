@@ -1,3 +1,9 @@
+/**
+ * Map-tab reminder hook: persist a lat/lon + AQI threshold, sync to Supabase for server push,
+ * and fire local notifications on live threshold crossings (historical scrubbing disabled).
+ *
+ * Requires expo-notifications plugin and app.config extra.eas.projectId for push tokens.
+ */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
@@ -225,6 +231,7 @@ export function useAirQualityReminder(
   }, [persist]);
 
   useEffect(() => {
+    // Only evaluate against live map data — historical snapshots would false-trigger alerts.
     if (!loadedRef.current || reminder == null || !viewingLive) return;
 
     const { predPm25 } = computeSsfSelection(reminder.lat, reminder.lon, sensors, kriging);
@@ -233,6 +240,7 @@ export function useAirQualityReminder(
     const key = `${reminder.lat.toFixed(5)},${reminder.lon.toFixed(5)},${reminder.categoryIndex}`;
     const prev = thresholdCrossRef.current;
 
+    // Edge-trigger: notify only on upward crossing, not while AQI stays above threshold.
     if (prev?.key !== key) {
       thresholdCrossRef.current = { key, wasAbove: above };
       return;

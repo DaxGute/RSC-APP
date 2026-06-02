@@ -1,3 +1,12 @@
+/**
+ * Shared air-quality data layer for the map and graph tabs (mounted once in App.tsx).
+ *
+ * Live mode: poll PurpleAir + Clarity every POLL_INTERVAL_MS, show latest timestamp.
+ * Historical mode: scrub timeline → cache or fetch snapshot, recompute kriging per slot.
+ *
+ * Consumers receive `sensors` / `kriging` already switched for live vs historical;
+ * they should not branch on `viewingLive` for display data (only for UX like reminders).
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { POLL_INTERVAL_MS, ROLLING_24H_TIME_WINDOW_BUFFER_MS } from '../lib/constants/ssf';
@@ -18,10 +27,12 @@ import type { SensorPoint } from '../lib/sensorTypes';
 
 export type { SensorPoint, SensorSource } from '../lib/sensorTypes';
 
+/** Rolling window for the map timeline scrubber and live poll queries. */
 const TIMELINE_HOURS_BACK = 24;
 const HISTORICAL_KRIGING_GRID_STEPS = HEATMAP_GRID_STEPS;
 const HISTORICAL_KRIGING_NEIGHBORS = 4;
 
+/** Query window with buffer so pipeline `time` values and client clock skew do not clip edge rows. */
 function rollingRecordedTimeBounds(): { fromIso: string; toIso: string } {
   const nowMs = Date.now();
   const buf = ROLLING_24H_TIME_WINDOW_BUFFER_MS;
@@ -185,6 +196,10 @@ function buildAverageAqiTimeseries(
     .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 }
 
+/**
+ * Drop timeline slots outside the rolling 24h window.
+ * `preserveIso` keeps a calendar-picked timestamp visible even when it falls outside the window.
+ */
 function trimTimesToRollingDay(timesAsc: string[], preserveIso?: string | null): string[] {
   const now = Date.now();
   const floor = now - TIMELINE_HOURS_BACK * 60 * 60 * 1000;
@@ -218,6 +233,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
   const historicalCacheRef = useRef<Map<string, HistoricalSnapshot>>(new Map());
   const latestKrigingRef = useRef<CurrentKrigingRow[]>([]);
   const timelineInitRef = useRef(false);
+  /** Set by selectRecordedTime so trimTimesToRollingDay does not drop calendar picks outside 24h. */
   const pinnedHistoricalTimeRef = useRef<string | null>(null);
   const mounted = useRef(true);
   /** After the first successful map payload, background polls skip the loading overlay. */
@@ -243,6 +259,8 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     };
   }, []);
 
+  // Boot: seed timeline from pipeline distinct times and daily AQI rows (parallel effects below).
+  // Either effect may set timelineInitRef; last successful fetch wins the initial live-end index.
   useEffect(() => {
     void (async () => {
       const { times, error: tErr } = await fetchDistinctPipelineTimes(TIMELINE_HOURS_BACK);
@@ -336,6 +354,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
         setTimelineTimesAsc((prev) => {
           const merged = trimTimesToRollingDay(mergeTimesAsc(prev, times), pinnedHistoricalTimeRef.current);
           if (merged.length > 0) timelineInitRef.current = true;
+          // During live poll: stay at live end if already there; else preserve scrub position clamped.
           setTimelineIndex((idx) => {
             if (merged.length === 0) return 0;
             if (prev.length === 0) return merged.length - 1;
@@ -450,6 +469,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     };
   }, [recomputeHistoricalKriging, timelineIndex, timelineTimesAsc]);
 
+  // Public API: swap live poll state vs historical snapshot here so screens stay dumb.
   const displaySensors = viewingLive ? sensors : (historicalDisplay?.sensors ?? []);
   const displayKriging = viewingLive ? kriging : (historicalDisplay?.kriging ?? []);
   const liveAverageAqi = useMemo(() => {

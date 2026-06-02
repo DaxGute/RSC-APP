@@ -2,6 +2,7 @@
   "expo": {
     "name": "RSC-APP",
     "slug": "rsc-app",
+    "owner": "dxgt",
     "version": "1.4.1",
     "orientation": "portrait",
     "icon": "./assets/rise-south-city-logo.png",
@@ -31,6 +32,7 @@
       "favicon": "./assets/rise-south-city-logo.png"
     },
     "plugins": [
+      "expo-dev-client",
       "expo-notifications",
       [
         "expo-splash-screen",
@@ -44,6 +46,7 @@
     ],
     "extra": {
       "eas": {
+        "projectId": "6bfd8f88-d971-4664-95ba-12233aaf9471"
       }
     }
   }

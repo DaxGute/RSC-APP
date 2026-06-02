@@ -43,6 +43,7 @@ export type MapScreenCopy = {
   openTimeFilterMenu: string;
   insufficientDataTitle: string;
   insufficientDataSubtitle: string;
+  noHourlyReadingSubtitle: string;
   connectionAlertTitle: string;
   connectionAlertReminderBody: string;
   alertLocationBanner: string;
@@ -99,6 +100,7 @@ export const mapScreenCopy: Record<AppLanguage, MapScreenCopy> = {
     openTimeFilterMenu: 'Open time filter menu',
     insufficientDataTitle: 'Insufficient Data',
     insufficientDataSubtitle: 'No sensor readings for this time.',
+    noHourlyReadingSubtitle: 'No reading available for this hour.',
     connectionAlertTitle: 'Check your connection',
     connectionAlertReminderBody: 'We could not save your reminder. Check your connection.',
     alertLocationBanner: 'Click on a location to set an alert',
@@ -161,6 +163,7 @@ export const mapScreenCopy: Record<AppLanguage, MapScreenCopy> = {
     openTimeFilterMenu: 'Abrir menú de filtro de tiempo',
     insufficientDataTitle: 'Datos insuficientes',
     insufficientDataSubtitle: 'No hay lecturas de sensores para este momento.',
+    noHourlyReadingSubtitle: 'No hay lectura disponible para esta hora.',
     connectionAlertTitle: 'Revisa tu conexión',
     connectionAlertReminderBody: 'No pudimos guardar tu recordatorio. Revisa tu conexión.',
     alertLocationBanner: 'Toca un lugar en el mapa para configurar una alerta',

@@ -1,0 +1,1286 @@
+/**
+ * Map callout / sheet: PM2.5 or AQI at a tapped coordinate.
+ * Sensor tap → observed reading from that row; map tap → kriging grid sample (computeSsfSelection).
+ * Optional reminder modal (single global alert); sheetMode used when embedded in SsfMap MarkerView.
+ */
+import { FontAwesome } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
+
+import type { CurrentKrigingRow } from '../../../lib/database.types';
+import { coordinateInRegion, type MapRegion } from '../../../lib/mapRegionFromData';
+import {
+  EPA_AQI_CATEGORY_BANDS,
+  aqiCategory,
+  pm25BreakpointCategory,
+  pm25ToAqi,
+  type AqiCategory,
+  type Pm25Category,
+} from '../../../lib/aqiUtils';
+import { milesBetweenKm } from '../../../lib/geoUtils';
+import { computeSsfSelection } from '../../../lib/ssfSelection';
+import type { SensorPoint } from '../../../lib/sensorTypes';
+import type { FetchError } from '../../../lib/fetchAirQuality';
+import type { Metric } from '../../../lib/metric';
+import type { AppLanguage } from '../../../lib/appLanguage';
+import type { MapScreenCopy } from '../../../lib/mapScreenCopy';
+import { localizedAqiCategoryLabel, mapScreenCopy } from '../../../lib/mapScreenCopy';
+import { useAppLanguage } from '../../../contexts/LanguageProvider';
+import { MetricFade, MetricToggle } from './MetricToggle';
+
+export type { Metric } from '../../../lib/metric';
+
+/** Sheet-mode title derived from panel state (placeholder, OOB, loading, sensor vs estimate). */
+function sheetPanelTitle(
+  panel: { kind: string; isSensorReading?: boolean },
+  copy: MapScreenCopy,
+): string {
+  switch (panel.kind) {
+    case 'oob':
+      return copy.panelOutOfBounds;
+    case 'msg':
+      return copy.panelAirQuality;
+    case 'placeholder':
+      return copy.panelClickMap;
+    case 'ok':
+      return panel.isSensorReading ? copy.panelSensorReading : copy.panelAirQualityEstimate;
+    default:
+      return copy.panelAirQualityEstimate;
+  }
+}
+
+/** Hero label: observed vs predicted, keyed off active metric. */
+function metricHeroLabel(metric: Metric, isSensorReading: boolean, copy: MapScreenCopy): string {
+  if (isSensorReading) {
+    return metric === 'aqi' ? copy.panelObservedAqi : copy.panelObservedPm25;
+  }
+  return metric === 'aqi' ? copy.panelPredictedAqi : copy.panelPredictedPm25;
+}
+
+/** Preset cooldowns for the reminder modal (minutes). Default selection is 60. Labels are short so the row fits on one line. */
+const REMINDER_COOLDOWN_PRESETS = [
+  { minutes: 30, label: '30m', a11y: '30 minutes' },
+  { minutes: 60, label: '1h', a11y: '1 hour' },
+  { minutes: 300, label: '5h', a11y: '5 hours' },
+  { minutes: 720, label: '12h', a11y: '12 hours' },
+  { minutes: 1440, label: '24h', a11y: '24 hours' },
+] as const;
+
+/** Snap saved/initial cooldown to the nearest preset chip in the reminder modal. */
+function nearestReminderCooldownPreset(minutes: number): number {
+  let best: number = REMINDER_COOLDOWN_PRESETS[0].minutes;
+  let bestD = Math.abs(minutes - best);
+  for (const p of REMINDER_COOLDOWN_PRESETS) {
+    const d = Math.abs(minutes - p.minutes);
+    if (d < bestD) {
+      best = p.minutes;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+/** Hex color → rgba string for hero gradient fills. */
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const full =
+    h.length === 3
+      ? h
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : h;
+  const n = parseInt(full, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+export type AqiPanelProps = {
+  selected: { lat: number; lon: number } | null;
+  selectedLabel?: string | null;
+  selectedSensor?: { sensorIndex: number | string; source?: string } | null;
+  loading: boolean;
+  error: FetchError | null;
+  sensors: SensorPoint[];
+  kriging: CurrentKrigingRow[];
+  /** Same region as the map: extent of loaded sensor + kriging points. */
+  mapRegion: MapRegion;
+  /** When set (e.g. modal), shows a top bar with dismiss — matches SSF-AQI `aqi_panel.py` chrome. */
+  onClose?: () => void;
+  /**
+   * Bottom sheet: compact inner metrics (same font/padding as before), title + dismiss row,
+   * no internal scroll — height follows content.
+   */
+  sheetMode?: boolean;
+  /** Full-width docked sheet variant: opaque with square bottom corners. */
+  sheetDocked?: boolean;
+  /** EPA band index 0–5; when true, the bell uses the filled style for this map selection. */
+  reminderBellActive?: boolean;
+  /** If provided, a bell appears (when the panel has a valid estimate) to set a single global reminder. */
+  onReminderPickThreshold?: (
+    categoryIndex: number,
+    cooldownMinutes: number,
+  ) => void | Promise<void>;
+  /** When a reminder already exists for this spot, persist cooldown changes from the chips. */
+  onReminderCooldownChange?: (cooldownMinutes: number) => void | Promise<void>;
+  onReminderClear?: () => void;
+  /** Highlights the saved global threshold row in the reminder modal (0–5). */
+  savedReminderCategoryIndex?: number | null;
+  /** Saved cooldown for the reminder (minutes); omit or null to use default 60 in the modal. */
+  savedReminderCooldownMinutes?: number | null;
+  /** Increment from parent to open the reminder modal without duplicating modal UI. */
+  openReminderModalSignal?: number;
+  /** Called when the user starts touching this panel surface. */
+  onPanelTouchStart?: () => void;
+};
+
+/** Map selection callout / bottom sheet; resolves readings and hosts the reminder modal. */
+export function AqiPanel({
+  selected,
+  selectedLabel = null,
+  selectedSensor = null,
+  loading,
+  error,
+  sensors,
+  kriging,
+  mapRegion,
+  onClose,
+  sheetMode = false,
+  sheetDocked = false,
+  reminderBellActive = false,
+  onReminderPickThreshold,
+  onReminderCooldownChange,
+  onReminderClear,
+  savedReminderCategoryIndex = null,
+  savedReminderCooldownMinutes = null,
+  openReminderModalSignal = 0,
+  onPanelTouchStart,
+}: AqiPanelProps) {
+  const { language } = useAppLanguage();
+  const copy = mapScreenCopy[language];
+  const { width: winW } = useWindowDimensions();
+  const isNarrow = winW <= 640;
+  const [metric, setMetric] = useState<Metric>('pm25');
+  const [reminderModalOpen, setReminderModalOpen] = useState(false);
+  /** Snapshot when modal opens so Clear does not appear mid-close after first-time save. */
+  const [reminderHadClearWhenOpened, setReminderHadClearWhenOpened] = useState(false);
+  const [reminderCooldownMinutes, setReminderCooldownMinutes] = useState(60);
+
+  const openReminderModal = useCallback(() => {
+    setReminderHadClearWhenOpened(reminderBellActive);
+    setReminderCooldownMinutes(
+      nearestReminderCooldownPreset(savedReminderCooldownMinutes ?? 60),
+    );
+    setReminderModalOpen(true);
+  }, [reminderBellActive, savedReminderCooldownMinutes]);
+
+  const closeReminderModal = useCallback(() => {
+    setReminderModalOpen(false);
+  }, []);
+
+  const openReminderModalSignalRef = useRef(openReminderModalSignal);
+  useEffect(() => {
+    if (openReminderModalSignal === openReminderModalSignalRef.current) return;
+    openReminderModalSignalRef.current = openReminderModalSignal;
+    if (openReminderModalSignal <= 0) return;
+    if (!onReminderPickThreshold) return;
+    openReminderModal();
+  }, [openReminderModalSignal, onReminderPickThreshold, openReminderModal]);
+
+  const compact = sheetMode;
+
+  const panel = useMemo(() => {
+    if (selected == null) {
+      return {
+        kind: 'placeholder' as const,
+      };
+    }
+    const lat = selected.lat;
+    const lon = selected.lon;
+    if (!coordinateInRegion(lat, lon, mapRegion)) {
+      return { kind: 'oob' as const, lat, lon };
+    }
+    if (error) {
+      return { kind: 'msg' as const, msg: copy.panelLoadDataError(error.message) };
+    }
+    if (loading && sensors.length === 0 && kriging.length === 0) {
+      return { kind: 'msg' as const, msg: copy.panelLoadingData };
+    }
+    if (!loading && sensors.length === 0 && kriging.length === 0) {
+      return { kind: 'msg' as const, msg: copy.panelNoSensorData };
+    }
+
+    const isSensorReading = selectedSensor != null;
+    const base = computeSsfSelection(lat, lon, sensors, kriging);
+    // Sensor tap: use exact row PM2.5, not grid interpolation at the pin.
+    const exactSelectedSensor = isSensorReading
+      ? sensors.find(
+          (s) =>
+            s.sensorIndex === selectedSensor!.sensorIndex &&
+            (selectedSensor!.source == null || s.source === selectedSensor!.source),
+        ) ?? sensors.find((s) => s.sensorIndex === selectedSensor!.sensorIndex)
+      : null;
+    const predPm25 =
+      isSensorReading && exactSelectedSensor != null
+        ? exactSelectedSensor.pm25
+        : base.predPm25;
+    const predPm25Category = pm25BreakpointCategory(predPm25);
+    const predAqi = pm25ToAqi(predPm25);
+    const aqiCat = aqiCategory(predAqi);
+
+    return {
+      kind: 'ok' as const,
+      lat,
+      lon,
+      predPm25,
+      predPm25Category,
+      predAqi,
+      aqiCat,
+      isSensorReading,
+      closest: isSensorReading ? null : base.closest,
+    };
+  }, [copy, selected, loading, error, sensors, kriging, mapRegion, selectedSensor]);
+
+  const showReminderButton = Boolean(onReminderPickThreshold && panel.kind === 'ok');
+
+  const heroAccent =
+    panel.kind === 'ok'
+      ? metric === 'aqi'
+        ? panel.aqiCat.bg
+        : panel.predPm25Category.bg
+      : '#cbd5e1';
+
+  const heroValueSize = compact ? 30 : isNarrow ? 54 : 68;
+  const cardValueSize = compact ? 13 : isNarrow ? 22 : 28;
+
+  return (
+    <LinearGradient
+      colors={
+        sheetDocked
+          ? ['#ffffff', '#ffffff']
+          : ['rgba(255,255,255,0.92)', 'rgba(255,255,255,0.78)']
+      }
+      style={[
+        styles.shellOuter,
+        compact && styles.shellOuterCompact,
+        onClose == null && styles.shellOuterInline,
+        compact && styles.shellOuterSheetFlex,
+        sheetDocked && styles.shellOuterDocked,
+      ]}
+      onStartShouldSetResponderCapture={() => {
+        onPanelTouchStart?.();
+        return false;
+      }}
+      onMoveShouldSetResponderCapture={() => {
+        onPanelTouchStart?.();
+        return false;
+      }}
+    >
+      <View style={[styles.shell, compact && styles.shellSheetFlex]}>
+        {compact ? (
+          <>
+            <View style={styles.sheetTitleRow}>
+              <Text style={styles.sheetTitle} numberOfLines={1}>
+                {sheetPanelTitle(panel, copy)}
+              </Text>
+              <View style={styles.sheetTitleActions}>
+                {showReminderButton ? (
+                  <Pressable
+                    onPress={openReminderModal}
+                    hitSlop={12}
+                    style={styles.chromeIconBtnSheet}
+                    accessibilityRole="button"
+                    accessibilityLabel={copy.panelAirQualityReminderA11y}
+                  >
+                    <FontAwesome
+                      name={reminderBellActive ? 'bell' : 'bell-o'}
+                      size={19}
+                      color="#334155"
+                    />
+                  </Pressable>
+                ) : null}
+                {onClose ? (
+                  <Pressable
+                    onPress={onClose}
+                    hitSlop={12}
+                    style={styles.chromeIconBtnSheet}
+                    accessibilityRole="button"
+                    accessibilityLabel={copy.panelCloseA11y}
+                  >
+                    <Text style={styles.closeBtnText}>✕</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+            <View style={styles.sheetBody}>
+              <CompactPanelBody
+                panel={panel}
+                selectedLabel={selectedLabel}
+                metric={metric}
+                setMetric={setMetric}
+                heroAccent={heroAccent}
+                heroValueSize={heroValueSize}
+                cardValueSize={cardValueSize}
+                copy={copy}
+                language={language}
+              />
+            </View>
+          </>
+        ) : (
+          <>
+            {onClose ? (
+              <View style={styles.shellTop}>
+                <View style={styles.shellTopActions}>
+                  {showReminderButton ? (
+                    <Pressable
+                      onPress={openReminderModal}
+                      hitSlop={12}
+                      style={styles.chromeIconBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel={copy.panelAirQualityReminderA11y}
+                    >
+                      <FontAwesome
+                        name={reminderBellActive ? 'bell' : 'bell-o'}
+                        size={21}
+                        color="#334155"
+                      />
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    onPress={onClose}
+                    hitSlop={12}
+                    style={styles.chromeIconBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={copy.panelCloseA11y}
+                  >
+                    <Text style={styles.closeBtnText}>✕</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
+            <ScrollView
+              contentContainerStyle={[styles.scroll, isNarrow && styles.scrollNarrow]}
+              keyboardShouldPersistTaps="handled"
+              style={styles.scrollView}
+            >
+          {panel.kind === 'oob' ? (
+            <View style={[styles.empty, styles.emptyMinH]}>
+              <Text style={styles.emptyTitle}>{copy.panelOutOfBounds}</Text>
+              <Text style={styles.emptyBody}>{copy.panelOobBody}</Text>
+              <Text style={styles.emptyCoords}>
+                {panel.lat.toFixed(5)}, {panel.lon.toFixed(5)}
+              </Text>
+            </View>
+          ) : panel.kind === 'msg' ? (
+            <View style={[styles.empty, styles.emptyMinH]}>
+              <Text style={styles.emptyBody}>{panel.msg}</Text>
+            </View>
+          ) : null}
+
+          {panel.kind === 'placeholder' ? (
+            <>
+              <View style={styles.modernTop}>
+                <View>
+                  <Text style={styles.eyebrow}>{copy.panelClickMap}</Text>
+                  <Text style={styles.coords}>-, -.</Text>
+                </View>
+              </View>
+              <View style={styles.heroWrap}>
+                <LinearGradient
+                  colors={[hexToRgba('#cbd5e1', 0.35), 'rgba(255,255,255,0.88)']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0.35, y: 1 }}
+                  style={[styles.hero, styles.heroShadow, { shadowColor: '#94a3b8' }]}
+                >
+                  <MetricFade contentKey={`ph-${metric}`} style={styles.heroInner}>
+                    <Text style={styles.heroLabel}>
+                      {metricHeroLabel(metric, false, copy)}
+                    </Text>
+                    <View style={styles.heroRow}>
+                      <Text style={[styles.heroValue, { fontSize: heroValueSize }]}>—</Text>
+                      <Text style={styles.heroUnit}>{metric === 'aqi' ? 'AQI' : 'µg/m³'}</Text>
+                    </View>
+                    <View style={styles.badge}>
+                      <Text style={styles.badgeText}>{copy.panelNoData}</Text>
+                    </View>
+                  </MetricFade>
+                </LinearGradient>
+              </View>
+            </>
+          ) : panel.kind === 'ok' ? (
+            <>
+              <View style={styles.modernTop}>
+                <View style={styles.modernTopLeft}>
+                  <Text style={styles.eyebrow}>
+                    {panel.isSensorReading ? copy.panelSensorReading : copy.panelAirQualityEstimate}
+                  </Text>
+                  <Text style={styles.coords}>
+                    {selectedLabel ?? `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.heroWrap}>
+                <LinearGradient
+                  colors={[hexToRgba(heroAccent, 0.17), 'rgba(255,255,255,0.76)']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={[styles.hero, styles.heroShadow, { shadowColor: heroAccent }]}
+                >
+                  <MetricFade
+                    contentKey={`ok-${metric}-${panel.predAqi ?? 'x'}-${panel.predPm25 ?? 'x'}`}
+                    style={styles.heroInner}
+                  >
+                    <Text style={styles.heroLabel}>
+                      {metricHeroLabel(metric, panel.isSensorReading, copy)}
+                    </Text>
+                    <View style={styles.heroRow}>
+                      <Text style={[styles.heroValue, { fontSize: heroValueSize }]}>
+                        {metric === 'aqi'
+                          ? panel.predAqi != null
+                            ? String(panel.predAqi)
+                            : '—'
+                          : panel.predPm25 != null && Number.isFinite(panel.predPm25)
+                            ? panel.predPm25.toFixed(1)
+                            : '—'}
+                      </Text>
+                      <Text style={styles.heroUnit}>{metric === 'aqi' ? 'AQI' : 'µg/m³'}</Text>
+                    </View>
+                    <View style={styles.badge}>
+                      <Text style={styles.badgeText}>
+                        {metric === 'aqi'
+                          ? localizedAqiCategoryLabel(panel.aqiCat.label, language)
+                          : localizedAqiCategoryLabel(panel.predPm25Category.label, language)}
+                      </Text>
+                    </View>
+                  </MetricFade>
+                </LinearGradient>
+              </View>
+            </>
+          ) : null}
+
+          <View style={styles.metricToggleDock}>
+            <MetricToggle metric={metric} onMetricChange={setMetric} />
+          </View>
+
+          {(panel.kind === 'placeholder' || (panel.kind === 'ok' && !panel.isSensorReading)) ? (
+            <MetricFade
+              contentKey={`grid-${metric}-${panel.kind}`}
+              style={[styles.grid, styles.gridAfterToggle]}
+            >
+              {panel.kind === 'placeholder' ? (
+                <>
+                  <MiniCard
+                    k={copy.panelClosestSensor}
+                    v="—"
+                    sub={copy.panelClickMapForSensor}
+                    valueFontSize={cardValueSize}
+                  />
+                  <MiniCard
+                    k={copy.panelSensorDistance}
+                    v="—"
+                    valueFontSize={cardValueSize}
+                  />
+                </>
+              ) : (
+                <>
+                  <MiniCard
+                    k={copy.panelClosestSensor}
+                    v={
+                      panel.closest
+                        ? metric === 'aqi'
+                          ? `${pm25ToAqi(panel.closest.pm25) ?? '—'} AQI`
+                          : `${panel.closest.pm25.toFixed(1)} µg/m³`
+                        : '—'
+                    }
+                    valueFontSize={cardValueSize}
+                  />
+                  <MiniCard
+                    k={copy.panelSensorDistance}
+                    v={
+                      panel.closest ? `${milesBetweenKm(panel.closest.distKm).toFixed(2)} mi` : '—'
+                    }
+                    valueFontSize={cardValueSize}
+                  />
+                </>
+              )}
+            </MetricFade>
+          ) : null}
+
+        </ScrollView>
+          </>
+        )}
+      </View>
+
+      <Modal
+        visible={reminderModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={closeReminderModal}
+      >
+        <View style={styles.reminderModalRoot}>
+          <Pressable
+            style={styles.reminderModalBackdrop}
+            onPress={closeReminderModal}
+            accessibilityRole="button"
+            accessibilityLabel={copy.panelDismissA11y}
+          />
+          <View style={styles.reminderModalCard}>
+            <Text style={styles.reminderModalTitle}>{copy.reminderModalTitle}</Text>
+            <Text style={styles.reminderModalHint}>{copy.reminderModalHint}</Text>
+            <View style={styles.reminderColorList}>
+              {/* Band index 0 (Good) omitted — reminders start at Unhealthy for Sensitive Groups. */}
+              {EPA_AQI_CATEGORY_BANDS.slice(1).map((row, i) => {
+                const index = i + 1;
+                const saved = savedReminderCategoryIndex === index;
+                return (
+                  <Pressable
+                    key={row.cat.label}
+                    onPress={() => {
+                      closeReminderModal();
+                      void (async () => {
+                        try {
+                          await onReminderPickThreshold?.(index, reminderCooldownMinutes);
+                        } catch {
+                          /* parent shows alert */
+                        }
+                      })();
+                    }}
+                    style={({ pressed }) => [
+                      styles.reminderColorRow,
+                      saved && styles.reminderColorRowSaved,
+                      pressed && (saved ? styles.reminderColorRowPressedSaved : styles.reminderColorRowPressed),
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={copy.reminderBandA11y(
+                      localizedAqiCategoryLabel(row.cat.label, language),
+                      row.lo,
+                      row.hi,
+                    )}
+                  >
+                    <View style={[styles.reminderSwatch, { backgroundColor: row.cat.bg }]} />
+                    <Text
+                      style={[styles.reminderColorLabel, saved && styles.reminderColorLabelSaved]}
+                      numberOfLines={2}
+                    >
+                      {localizedAqiCategoryLabel(row.cat.label, language)}
+                    </Text>
+                    <Text style={[styles.reminderBandRange, saved && styles.reminderBandRangeSaved]}>
+                      {row.lo}–{row.hi}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={styles.reminderCooldownBlock}>
+              <Text style={styles.reminderCooldownLabel}>{copy.reminderCooldownLabel}</Text>
+              <Text style={styles.reminderCooldownHint}>{copy.reminderCooldownHint}</Text>
+              <View style={styles.reminderCooldownChips}>
+                {REMINDER_COOLDOWN_PRESETS.map((p) => {
+                  const selected = reminderCooldownMinutes === p.minutes;
+                  return (
+                    <Pressable
+                      key={p.minutes}
+                      onPress={() => {
+                        if (reminderCooldownMinutes === p.minutes) return;
+                        setReminderCooldownMinutes(p.minutes);
+                        const hasSavedReminderHere =
+                          reminderBellActive &&
+                          savedReminderCategoryIndex != null &&
+                          savedReminderCategoryIndex >= 1;
+                        if (hasSavedReminderHere) {
+                          void onReminderCooldownChange?.(p.minutes);
+                        }
+                      }}
+                      style={({ pressed }) => [
+                        styles.reminderCooldownChip,
+                        selected && styles.reminderCooldownChipSelected,
+                        pressed && styles.reminderCooldownChipPressed,
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={copy.reminderCooldownA11yForMinutes(p.minutes)}
+                    >
+                      <Text
+                        style={[
+                          styles.reminderCooldownChipText,
+                          selected && styles.reminderCooldownChipTextSelected,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {p.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+            {reminderHadClearWhenOpened && onReminderClear ? (
+              <Pressable
+                onPress={() => {
+                  onReminderClear();
+                  closeReminderModal();
+                }}
+                style={styles.reminderClearBtn}
+                accessibilityRole="button"
+                accessibilityLabel={copy.reminderClearA11y}
+              >
+                <Text style={styles.reminderClearBtnText}>{copy.reminderClear}</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+    </LinearGradient>
+  );
+}
+
+/** Discriminated union driving placeholder, error, OOB, and OK panel bodies. */
+type PanelState =
+  | { kind: 'placeholder' }
+  | { kind: 'oob'; lat: number; lon: number }
+  | { kind: 'msg'; msg: string }
+  | {
+      kind: 'ok';
+      lat: number;
+      lon: number;
+      predPm25: number | null;
+      predPm25Category: Pm25Category;
+      predAqi: number | null;
+      aqiCat: AqiCategory;
+      isSensorReading: boolean;
+      closest: { lat: number; lon: number; pm25: number; distKm: number } | null;
+    };
+
+/** Sheet-mode layout: coords + inline toggle, compact hero, optional closest-sensor cards. */
+function CompactPanelBody({
+  panel,
+  selectedLabel,
+  metric,
+  setMetric,
+  heroAccent,
+  heroValueSize,
+  cardValueSize,
+  copy,
+  language,
+}: {
+  panel: PanelState;
+  selectedLabel?: string | null;
+  metric: Metric;
+  setMetric: (m: Metric) => void;
+  heroAccent: string;
+  heroValueSize: number;
+  cardValueSize: number;
+  copy: MapScreenCopy;
+  language: AppLanguage;
+}) {
+  if (panel.kind === 'oob') {
+    return (
+      <View style={styles.compactMsgBox}>
+        <Text style={styles.compactMsgBody}>{copy.panelOobBody}</Text>
+        <Text style={styles.compactCoordsMono}>
+          {panel.lat.toFixed(5)}, {panel.lon.toFixed(5)}
+        </Text>
+      </View>
+    );
+  }
+  if (panel.kind === 'msg') {
+    return <Text style={styles.compactMsgBody}>{panel.msg}</Text>;
+  }
+
+  const ph = panel.kind === 'placeholder';
+  const okPanel = panel.kind === 'ok';
+
+  const heroMainValue = ph
+    ? '—'
+    : metric === 'aqi'
+      ? panel.predAqi != null
+        ? String(panel.predAqi)
+        : '—'
+      : panel.predPm25 != null && Number.isFinite(panel.predPm25)
+        ? panel.predPm25.toFixed(1)
+        : '—';
+
+  const gradColors = ph
+    ? ([hexToRgba('#cbd5e1', 0.35), 'rgba(255,255,255,0.88)'] as const)
+    : ([hexToRgba(heroAccent, 0.17), 'rgba(255,255,255,0.76)'] as const);
+  const shadowC = ph ? '#94a3b8' : heroAccent;
+
+  return (
+    <>
+      <View style={styles.compactCoordsRow}>
+        <Text style={styles.compactCoords} numberOfLines={2}>
+          {ph ? '-, -.' : selectedLabel ?? `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
+        </Text>
+        <View style={styles.compactToggleInHeader}>
+          <MetricToggle metric={metric} onMetricChange={setMetric} compact />
+        </View>
+      </View>
+
+      <LinearGradient
+        colors={gradColors}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[styles.compactHeroGrad, { shadowColor: shadowC }, styles.compactHeroShadow]}
+      >
+        <View style={styles.compactHeroMain}>
+          <MetricFade
+            contentKey={`compact-hero-${metric}-${heroMainValue}-${ph ? 'ph' : okPanel ? panel.aqiCat.label : ''}`}
+          >
+            <Text style={styles.compactHeroLabel}>
+              {metricHeroLabel(metric, okPanel ? panel.isSensorReading : false, copy)}
+            </Text>
+            <View style={styles.compactHeroValueRow}>
+              <Text style={[styles.compactHeroValue, { fontSize: heroValueSize }]}>{heroMainValue}</Text>
+              <Text style={styles.compactHeroUnit}>{metric === 'aqi' ? 'AQI' : 'µg/m³'}</Text>
+              <View style={styles.compactBadge}>
+                <Text style={styles.compactBadgeText} numberOfLines={1}>
+                  {ph
+                    ? copy.panelNoData
+                    : metric === 'aqi'
+                      ? localizedAqiCategoryLabel(panel.aqiCat.label, language)
+                      : localizedAqiCategoryLabel(panel.predPm25Category.label, language)}
+                </Text>
+              </View>
+            </View>
+          </MetricFade>
+        </View>
+      </LinearGradient>
+
+      {ph || (okPanel && !panel.isSensorReading) ? (
+        <MetricFade
+          contentKey={`compact-cards-${metric}-${ph ? 'ph' : panel.closest?.pm25 ?? 'x'}`}
+          style={styles.compactCardsRow}
+        >
+          <MiniCard
+            k={copy.panelClosestSensor}
+            v={
+              ph
+                ? '—'
+                : panel.closest
+                  ? metric === 'aqi'
+                    ? `${pm25ToAqi(panel.closest.pm25) ?? '—'} AQI`
+                    : `${panel.closest.pm25.toFixed(1)} µg/m³`
+                  : '—'
+            }
+            sub={ph ? copy.panelClickMapForSensor : undefined}
+            valueFontSize={cardValueSize}
+            compact
+          />
+          <MiniCard
+            k={copy.panelSensorDistance}
+            v={
+              ph || !panel.closest ? '—' : `${milesBetweenKm(panel.closest.distKm).toFixed(2)} mi`
+            }
+            valueFontSize={cardValueSize}
+            compact
+          />
+        </MetricFade>
+      ) : null}
+    </>
+  );
+}
+
+/** Small stat tile (closest sensor reading or distance) in full and compact grids. */
+function MiniCard({
+  k,
+  v,
+  sub,
+  valueFontSize,
+  compact: compactCard,
+}: {
+  k: string;
+  v: string;
+  sub?: string;
+  valueFontSize: number;
+  compact?: boolean;
+}) {
+  return (
+    <View style={[styles.mini, compactCard && styles.miniCompact]}>
+      <Text style={[styles.miniK, compactCard && styles.miniKCompact]}>{k}</Text>
+      <Text
+        style={[styles.miniV, { fontSize: valueFontSize }, compactCard && styles.miniVCompact]}
+        numberOfLines={compactCard ? 2 : 1}
+      >
+        {v}
+      </Text>
+      {sub ? (
+        <Text style={[styles.miniSub, compactCard && styles.miniSubCompact]} numberOfLines={compactCard ? 2 : undefined}>
+          {sub}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  shellOuter: {
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    overflow: 'hidden',
+    shadowColor: '#020617',
+    shadowOffset: { width: 0, height: 24 },
+    shadowOpacity: 0.12,
+    shadowRadius: 30,
+    elevation: 14,
+    width: '100%',
+  },
+  shellOuterInline: {
+    maxWidth: 520,
+    alignSelf: 'stretch',
+  },
+  shell: {
+    minWidth: 0,
+  },
+  shellTop: {
+    paddingTop: 10,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  shellTopActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  chromeIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+  },
+  closeBtnText: {
+    fontSize: 16,
+    color: '#334155',
+    fontWeight: '600',
+  },
+  scrollView: { flexGrow: 0 },
+  scroll: {
+    paddingHorizontal: 22,
+    paddingTop: 4,
+    paddingBottom: 24,
+    flexGrow: 1,
+    gap: 0,
+  },
+  scrollNarrow: { paddingHorizontal: 16, paddingTop: 0 },
+  modernTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 16,
+    marginBottom: 6,
+  },
+  modernTopLeft: { flex: 1, minWidth: 0 },
+  metricToggleDock: {
+    alignSelf: 'flex-start',
+    marginLeft: 16,
+    marginTop: 4,
+    marginBottom: 8,
+    zIndex: 20,
+  },
+  eyebrow: {
+    marginBottom: 6,
+    fontSize: 40,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    color: '#64748b',
+    textTransform: 'uppercase',
+  },
+  title: { fontSize: 28, fontWeight: '800', color: '#0f172a', letterSpacing: -0.8 },
+  coords: {
+    marginTop: 6,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748b',
+    fontVariant: ['tabular-nums'],
+  },
+  heroWrap: {
+    marginTop: 20,
+    marginBottom: 0,
+  },
+  hero: {
+    position: 'relative',
+    borderRadius: 26,
+    paddingTop: 24,
+    paddingHorizontal: 22,
+    paddingBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.07)',
+  },
+  heroShadow: {
+    shadowOffset: { width: 0, height: 22 },
+    shadowOpacity: 0.28,
+    shadowRadius: 26,
+    elevation: 10,
+  },
+  heroInner: { gap: 10 },
+  heroLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    color: '#0f172a',
+    opacity: 0.92,
+    textTransform: 'uppercase',
+  },
+  heroRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' },
+  heroValue: { fontWeight: '900', color: '#0f172a', letterSpacing: -3 },
+  heroUnit: { fontSize: 15, fontWeight: '700', color: '#0f172a', paddingBottom: 10, opacity: 0.92 },
+  badge: { alignSelf: 'flex-start', marginTop: 4 },
+  badgeText: {
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    overflow: 'hidden',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+    color: '#0f172a',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  grid: { gap: 14 },
+  gridAfterToggle: { marginTop: 8 },
+  mini: {
+    borderRadius: 20,
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 14,
+    backgroundColor: 'rgba(255,255,255,0.56)',
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.06)',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  miniK: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    color: '#64748b',
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  miniV: { fontWeight: '800', color: '#0f172a', letterSpacing: -0.5 },
+  miniSub: { marginTop: 6, fontSize: 12, color: '#64748b', lineHeight: 18 },
+  empty: { paddingVertical: 28, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
+  emptyMinH: { minHeight: 220 },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: '#7c2d12', marginBottom: 8 },
+  emptyBody: { fontSize: 15, color: '#475569', textAlign: 'center', lineHeight: 22 },
+  emptyCoords: {
+    marginTop: 10,
+    fontSize: 12,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    color: '#475569',
+  },
+
+  shellOuterCompact: {
+    borderRadius: 18,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.1,
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  shellOuterSheetFlex: {
+    alignSelf: 'stretch',
+  },
+  shellOuterDocked: {
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    borderColor: 'rgba(15,23,42,0.08)',
+  },
+  shellSheetFlex: {
+    minWidth: 0,
+  },
+  sheetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingTop: 4,
+  },
+  sheetTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0f172a',
+    letterSpacing: -0.3,
+  },
+  sheetTitleActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
+  },
+  chromeIconBtnSheet: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+  },
+  reminderModalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 22,
+  },
+  reminderModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  reminderModalCard: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 18,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    backgroundColor: 'rgba(255,255,255,0.98)',
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.1)',
+    shadowColor: '#020617',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.2,
+    shadowRadius: 24,
+    elevation: 12,
+    zIndex: 2,
+  },
+  reminderModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginBottom: 8,
+    letterSpacing: -0.3,
+  },
+  reminderModalHint: {
+    fontSize: 12,
+    color: '#64748b',
+    lineHeight: 17,
+    marginBottom: 12,
+  },
+  reminderColorList: {
+    gap: 6,
+  },
+  reminderColorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(241,245,249,0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.06)',
+  },
+  reminderColorRowSaved: {
+    borderColor: '#2563eb',
+    backgroundColor: 'rgba(37, 99, 235, 0.1)',
+  },
+  reminderColorRowPressed: {
+    backgroundColor: 'rgba(226,232,240,0.95)',
+  },
+  reminderColorRowPressedSaved: {
+    backgroundColor: 'rgba(37, 99, 235, 0.18)',
+  },
+  reminderSwatch: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.12)',
+  },
+  reminderColorLabel: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  reminderColorLabelSaved: {
+    color: '#1d4ed8',
+  },
+  reminderBandRange: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748b',
+    fontVariant: ['tabular-nums'],
+  },
+  reminderBandRangeSaved: {
+    color: '#2563eb',
+  },
+  reminderCooldownBlock: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(15,23,42,0.08)',
+  },
+  reminderCooldownLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  reminderCooldownHint: {
+    fontSize: 11,
+    color: '#64748b',
+    lineHeight: 15,
+    marginBottom: 10,
+  },
+  reminderCooldownChips: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    width: '100%',
+    gap: 4,
+  },
+  reminderCooldownChip: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+    borderRadius: 999,
+    backgroundColor: 'rgba(241,245,249,0.95)',
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.08)',
+  },
+  reminderCooldownChipSelected: {
+    backgroundColor: 'rgba(37, 99, 235, 0.12)',
+    borderColor: '#2563eb',
+  },
+  reminderCooldownChipPressed: {
+    opacity: 0.85,
+  },
+  reminderCooldownChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+    fontVariant: ['tabular-nums'],
+    textAlign: 'center',
+  },
+  reminderCooldownChipTextSelected: {
+    color: '#1d4ed8',
+  },
+  reminderClearBtn: {
+    marginTop: 14,
+    alignSelf: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  reminderClearBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#b91c1c',
+  },
+  sheetBody: {
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+  },
+  compactMsgBox: { alignItems: 'center', paddingVertical: 4 },
+  compactMsgBody: { fontSize: 12, color: '#475569', textAlign: 'center', lineHeight: 16 },
+  compactCoordsMono: {
+    marginTop: 4,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#475569',
+    fontVariant: ['tabular-nums'],
+  },
+  compactCoordsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 6,
+    flexWrap: 'wrap',
+  },
+  compactToggleInHeader: { flexShrink: 0 },
+  compactCoords: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748b',
+    fontVariant: ['tabular-nums'],
+    flexWrap: 'wrap',
+  },
+  compactHeroGrad: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.07)',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  compactHeroShadow: {
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  compactHeroMain: { flex: 1, minWidth: 140, position: 'relative' },
+  compactHeroLabel: {
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 1,
+    color: '#0f172a',
+    opacity: 0.85,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  compactHeroValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  compactHeroValue: { fontWeight: '900', color: '#0f172a', letterSpacing: -1 },
+  compactHeroUnit: { fontSize: 11, fontWeight: '700', color: '#0f172a', opacity: 0.9 },
+  compactBadge: {
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
+    maxWidth: '100%',
+  },
+  compactBadgeText: { fontSize: 10, fontWeight: '800', color: '#0f172a' },
+  compactCardsRow: { flexDirection: 'row', gap: 8, marginTop: 6, alignItems: 'stretch' },
+  miniCompact: {
+    flex: 1,
+    minWidth: 0,
+    paddingTop: 8,
+    paddingHorizontal: 8,
+    paddingBottom: 8,
+    borderRadius: 12,
+  },
+  miniKCompact: { fontSize: 8, letterSpacing: 0.8, marginBottom: 4 },
+  miniVCompact: { letterSpacing: -0.3 },
+  miniSubCompact: { marginTop: 2, fontSize: 9, lineHeight: 12 },
+});

@@ -1,3 +1,7 @@
+/**
+ * Map tap estimate: sample PM2.5 from the same grid as KrigingHeatmapLayer / AqiPanel heatmap.
+ * Also returns closest sensor for the mini-cards when the tap was not on a sensor feature.
+ */
 import type { CurrentKrigingRow } from './database.types';
 import { haversineKm } from './geoUtils';
 import { rowsToPm25Grid2D, samplePm25AtLonLat } from './modeling/gridMath';

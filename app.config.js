@@ -1,4 +1,4 @@
-/** Extends `app.json` (add config here when needed). */
+/** Expo config — merges app.json; use this file for JS overrides (app.json is strict JSON). */
 const appJson = require('./app.json');
 
 module.exports = {

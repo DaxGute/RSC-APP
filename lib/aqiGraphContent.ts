@@ -67,7 +67,7 @@ export const aqiGraphCopy: Record<AppLanguage, AqiGraphCopy> = {
     rollingSectionLabel: 'Section 1',
     rollingSectionTitle: 'Rolling 7-day average',
     rollingSectionSub:
-      'Each bar is the average AQI for that hour across all readings in the last 7 days.',
+      'Each bar averages 10-minute slots for that hour: each slot is the mean AQI at that clock time across the last 7 days.',
     loadingSensorHistory: 'Loading sensor history…',
     noRollingAverages: 'No 7-day averages yet.',
     peakAvgShort: 'Peak Avg',
@@ -100,7 +100,7 @@ export const aqiGraphCopy: Record<AppLanguage, AqiGraphCopy> = {
     rollingSectionLabel: 'Sección 1',
     rollingSectionTitle: 'Promedio móvil de 7 días',
     rollingSectionSub:
-      'Cada barra es el AQI promedio de esa hora con todas las lecturas de los últimos 7 días.',
+      'Cada barra promedia intervalos de 10 min de esa hora: cada intervalo es el AQI medio a esa hora en los últimos 7 días.',
     loadingSensorHistory: 'Cargando historial de sensores…',
     noRollingAverages: 'Aún no hay promedios de 7 días.',
     peakAvgShort: 'Prom. máx',
