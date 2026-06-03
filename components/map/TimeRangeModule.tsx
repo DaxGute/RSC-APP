@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import Svg, { ClipPath, Defs, G, Line, Path, Rect } from 'react-native-svg';
-import { AQI_CATEGORY_BANDS, AQI_INDEX_MAX } from '../../lib/airQualityBreakpoints';
+import { AQI_CATEGORY_BANDS, AQI_INDEX_MAX } from '../../lib/shell/airQualityBreakpoints';
 
 /** One scrub bucket: normalized position along the axis plus optional fetch timestamp. */
 export type TimeRangePoint = {

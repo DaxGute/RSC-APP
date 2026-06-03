@@ -23,47 +23,51 @@ import { useAppLanguage } from '../../../contexts/LanguageProvider';
 import { KrigingHeatmapLayer } from '../KrigingHeatmapLayer';
 import { MapScaleActions } from '../SsfMap';
 import { WindArrowLayer } from './WindArrowLayer';
-import type { CurrentKrigingRow } from '../../../lib/database.types';
-import { SSF_BBOX } from '../../../lib/constants/ssf';
+import type { CurrentKrigingRow } from '../../../lib/shell/supabase';
+import { SSF_BBOX } from '../../../lib/map/mapRegionFromData';
 import {
   fetchForecastWindGrid,
   windGridSliceAtMinutes,
   type ForecastWindGridByTime,
-} from '../../../lib/forecastWindGrid';
+} from '../../../lib/map/projection/forecastWindGrid';
 import {
   analogLibraryCacheKey,
   buildHistoricalAnalogLibrary,
   getCachedAnalogLibrary,
-} from '../../../lib/modeling/buildHistoricalAnalogLibrary';
+} from '../../../lib/map/projection/modeling/buildHistoricalAnalogLibrary';
 import {
   formatAnalogTimestamp,
   horizonLabelForStepIndex,
   MIN_USABLE_ANALOG_LIBRARY,
   type AnalogProjectionQuality,
-} from '../../../lib/modeling/analogProjectionMetrics';
+} from '../../../lib/map/projection/modeling/analogProjectionMetrics';
 import {
   generateAnalogProjectionFrames,
   type ProjectionFrame,
-} from '../../../lib/modeling/generateAnalogProjectionFrames';
-import { createPhaseLoadProgress } from '../../../lib/modeling/phaseLoadProgress';
-import type { MapRegion } from '../../../lib/mapRegionFromData';
+} from '../../../lib/map/projection/modeling/generateAnalogProjectionFrames';
+import {
+  createPhaseLoadProgress,
+  yieldToEventLoop,
+} from '../../../lib/map/projection/modeling/phaseLoadProgress';
+import type { MapRegion } from '../../../lib/map/mapRegionFromData';
 import {
   formatProjectionHeader,
   minutesAheadForStep,
+  modelProjectionContent,
   PROJECTION_FRAME_COUNT,
   PROJECTION_FUTURE_STEPS,
   PROJECTION_MAJOR_LABELS,
   PROJECTION_MAJOR_STEP_INDICES,
-} from '../../../lib/projectionTimeLabels';
-import {
-  MODEL_PROJECTION_OVERLAY_Z_INDEX,
-  ROOT_TAB_BAR_RESERVED_HEIGHT,
-  ROOT_TAB_BAR_TOP_RADIUS,
-} from '../../../lib/constants/appLayout';
-import { yieldToEventLoop } from '../../../lib/yieldToEventLoop';
-import { resolveHeatmapGridRows } from '../../../lib/resolveHeatmapGrid';
-import type { SensorPoint } from '../../../lib/sensorTypes';
-import { modelProjectionCopy, type ModelProjectionCopy } from '../../../lib/modelProjectionCopy';
+  type ModelProjectionContent,
+} from '../../../lib/map/projection/modelProjectionContent';
+import { resolveHeatmapGridRows } from '../../../lib/map/recomputeKriging';
+import type { SensorPoint } from '../../../lib/map/sensorTypes';
+
+/** Matches `App.tsx` tab bar — overlay sits above the tab bar. */
+const ROOT_TAB_BAR_RESERVED_HEIGHT = 78;
+const ROOT_TAB_BAR_TOP_RADIUS = 16;
+/** Below language switch (190) and tab bar (200). */
+const MODEL_PROJECTION_OVERLAY_Z_INDEX = 150;
 
 /** Wired from App.tsx when the map tab Model button opens the projection overlay. */
 export type ModelProjectionMapProps = {
@@ -107,7 +111,7 @@ export function ModelProjectionMap({
   viewingLive: _viewingLive = true,
 }: ModelProjectionMapProps) {
   const { language } = useAppLanguage();
-  const copy = modelProjectionCopy[language];
+  const content = modelProjectionContent[language];
   const insets = useSafeAreaInsets();
   const [selectedStep, setSelectedStep] = useState(0);
   const [windData, setWindData] = useState<ForecastWindGridByTime | null>(null);
@@ -244,7 +248,6 @@ export function ModelProjectionMap({
         nowGrid: gridForLoad,
         wind,
         library: libraryResult.library,
-        debugMode: 'blend',
         nowMs,
       });
 
@@ -375,22 +378,22 @@ export function ModelProjectionMap({
           <View style={styles.headerTextCol}>
             <View style={styles.titleRow}>
               <View style={styles.experimentalBadge}>
-                <Text style={styles.experimentalBadgeText}>{copy.experimentalBadge}</Text>
+                <Text style={styles.experimentalBadgeText}>{content.experimentalBadge}</Text>
               </View>
               <Text style={styles.title} numberOfLines={2}>
-                {copy.title}
+                {content.title}
               </Text>
               <Pressable
                 onPress={() => setHelpModalOpen(true)}
                 hitSlop={10}
                 style={({ pressed }) => [styles.helpBtn, pressed && styles.helpBtnPressed]}
                 accessibilityRole="button"
-                accessibilityLabel={copy.helpBtnA11y}
+                accessibilityLabel={content.helpBtnA11y}
               >
                 <Ionicons name="help-circle-outline" size={22} color="#475569" />
               </Pressable>
             </View>
-            <Text style={styles.subtitle}>{copy.shortBlurb}</Text>
+            <Text style={styles.subtitle}>{content.shortBlurb}</Text>
             {!loading && analogQuality ? (
               <Text style={styles.meta}>
                 {analogQuality.topKCount} matches from {analogQuality.librarySampleCount} library
@@ -613,17 +616,17 @@ export function ModelProjectionMap({
             style={styles.helpModalBackdrop}
             onPress={() => setHelpModalOpen(false)}
             accessibilityRole="button"
-            accessibilityLabel={copy.helpCloseA11y}
+            accessibilityLabel={content.helpCloseA11y}
           />
           <View style={styles.helpModalCard}>
             <View style={styles.helpModalHeader}>
-              <Text style={styles.helpModalTitle}>{copy.helpTitle}</Text>
+              <Text style={styles.helpModalTitle}>{content.helpTitle}</Text>
               <Pressable
                 onPress={() => setHelpModalOpen(false)}
                 hitSlop={12}
                 style={({ pressed }) => [styles.helpModalCloseBtn, pressed && styles.helpBtnPressed]}
                 accessibilityRole="button"
-                accessibilityLabel={copy.helpCloseA11y}
+                accessibilityLabel={content.helpCloseA11y}
               >
                 <Ionicons name="close" size={22} color="#334155" />
               </Pressable>
@@ -634,16 +637,16 @@ export function ModelProjectionMap({
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
             >
-              {copy.helpPipeline.map((paragraph) => (
+              {content.helpPipeline.map((paragraph) => (
                 <Text key={paragraph.slice(0, 48)} style={styles.helpParagraph}>
                   {paragraph}
                 </Text>
               ))}
-              <Text style={styles.helpSectionLabel}>{copy.helpMatchesHeading}</Text>
+              <Text style={styles.helpSectionLabel}>{content.helpMatchesHeading}</Text>
               {loading || !analogQuality ? (
-                <Text style={styles.helpMuted}>{copy.helpMatchesLoading}</Text>
+                <Text style={styles.helpMuted}>{content.helpMatchesLoading}</Text>
               ) : (
-                <ModelProjectionMatchDetails quality={analogQuality} copy={copy} />
+                <ModelProjectionMatchDetails quality={analogQuality} content={content} />
               )}
             </ScrollView>
           </View>
@@ -656,46 +659,46 @@ export function ModelProjectionMap({
 /** Help modal body: library size, top-K analogs, per-horizon valid counts. */
 function ModelProjectionMatchDetails({
   quality,
-  copy,
+  content,
 }: {
   quality: AnalogProjectionQuality;
-  copy: ModelProjectionCopy;
+  content: ModelProjectionContent;
 }) {
   const belowMin = quality.librarySampleCount < MIN_USABLE_ANALOG_LIBRARY;
   return (
     <View style={styles.helpMatchBlock}>
       <Text style={styles.helpLine}>
-        {copy.matchLibraryLine(quality.librarySampleCount, belowMin, MIN_USABLE_ANALOG_LIBRARY)}
+        {content.matchLibraryLine(quality.librarySampleCount, belowMin, MIN_USABLE_ANALOG_LIBRARY)}
       </Text>
       <Text style={styles.helpLine}>
-        {copy.matchTopKLine(
+        {content.matchTopKLine(
           quality.topKCount,
           quality.meanTopKDistance != null ? quality.meanTopKDistance.toFixed(1) : null,
           quality.bestTopKDistance != null ? quality.bestTopKDistance.toFixed(1) : null,
         )}
       </Text>
       <Text style={styles.helpLine}>
-        {copy.matchFallbackLine(
+        {content.matchFallbackLine(
           (quality.weakFallbackWeight * 100).toFixed(0),
           quality.usedWeakFallback,
         )}
       </Text>
-      <Text style={styles.helpSubsectionLabel}>{copy.matchRankedHeading}</Text>
+      <Text style={styles.helpSubsectionLabel}>{content.matchRankedHeading}</Text>
       {quality.topAnalogMatches.length === 0 ? (
-        <Text style={styles.helpMuted}>{copy.matchNoMatches}</Text>
+        <Text style={styles.helpMuted}>{content.matchNoMatches}</Text>
       ) : (
         quality.topAnalogMatches.map((match, index) => (
           <Text key={`${match.time}-${index}`} style={styles.helpMatchRow}>
-            {copy.matchAnalogRow(
+            {content.matchAnalogRow(
               index + 1,
-              formatAnalogTimestamp(match.time, copy.localeTag),
+              formatAnalogTimestamp(match.time, content.localeTag),
               match.distance.toFixed(1),
               `${(match.weight * 100).toFixed(1)}%`,
             )}
           </Text>
         ))
       )}
-      <Text style={styles.helpSubsectionLabel}>{copy.matchFutureHeading}</Text>
+      <Text style={styles.helpSubsectionLabel}>{content.matchFutureHeading}</Text>
       {Array.from({ length: PROJECTION_FUTURE_STEPS }, (_, i) => {
         const libN = quality.horizonLibraryValidCounts[i] ?? 0;
         const topN = quality.horizonTopKValidCounts[i] ?? 0;
@@ -703,7 +706,7 @@ function ModelProjectionMatchDetails({
         const enoughTop = topN >= Math.max(3, Math.floor(quality.topKCount * 0.5));
         return (
           <Text key={`horizon-${i}`} style={styles.helpLine}>
-            {copy.matchHorizonLine(
+            {content.matchHorizonLine(
               horizonLabelForStepIndex(i + 1),
               libN,
               topN,

@@ -17,14 +17,15 @@ import { GlobalLanguageSwitch } from './components/shell/GlobalLanguageSwitch';
 import { InitialLoadSplash } from './components/shell/InitialLoadSplash';
 import { ModelProjectionMap } from './components/map/projection/ModelProjectionMap';
 import { SsfAirQualityScreen } from './components/map/SsfAirQualityScreen';
-import { regionFromSensorData } from './lib/mapRegionFromData';
+import { regionFromSensorData } from './lib/map/mapRegionFromData';
 import { LanguageProvider } from './contexts/LanguageProvider';
 import { useSsfAirQuality } from './hooks/useSsfAirQuality';
-import { ensureAnonymousSession } from './lib/ensureAnonymousSession';
-import {
-  ROOT_TAB_BAR_RESERVED_HEIGHT,
-  ROOT_TAB_BAR_TOP_RADIUS,
-} from './lib/constants/appLayout';
+import { ensureAnonymousSession } from './lib/shell/supabase';
+
+/** Space reserved above the floating root tab bar (tab pane bottom inset). */
+const ROOT_TAB_BAR_RESERVED_HEIGHT = 78;
+/** Top corner radius on the floating root tab bar. */
+const ROOT_TAB_BAR_TOP_RADIUS = 16;
 
 /** Bottom navigation destinations. */
 type RootTab = 'map' | 'graph' | 'education';

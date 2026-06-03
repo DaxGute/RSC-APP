@@ -1,0 +1,435 @@
+/**
+ * Historical analog library: 7-day sensor history → kriging grids,
+ * anchor/future time pairing, flat PM₂.₅ deltas, and robust live-trend stats.
+ */
+
+import type { ClarityRow, CurrentKrigingRow, PurpleAirRow } from '../../../shell/supabase';
+import {
+  fetchDistinctPipelineTimes,
+  fetchSensorReadingsBetweenRecordedTimes,
+} from '../../../shell/fetchAirQuality';
+import { minutesAheadForStep, PROJECTION_FUTURE_STEPS } from '../modelProjectionContent';
+import { HEATMAP_GRID_STEPS, recomputeKrigingFromSensors } from '../../recomputeKriging';
+import type { SensorPoint } from '../../sensorTypes';
+
+import {
+  pm25ValuesToFlat,
+  rowsToPm25Grid2D,
+  subtractFlat,
+  type Pm25Grid2D,
+} from './gridMath';
+
+/** Lookback window for analog anchor times. */
+export const HISTORICAL_DAYS = 7;
+const HISTORICAL_HOURS_BACK = HISTORICAL_DAYS * 24;
+/** Minimum spacing between subsampled anchor timestamps. */
+const MIN_SAMPLE_GAP_MS = 9 * 60 * 1000;
+/** Max |Δt| when matching a future grid to the target horizon. */
+const FUTURE_MATCH_TOLERANCE_MS = 25 * 60 * 1000;
+/** Upper bound on anchor plans processed per build. */
+const MAX_ANALOG_SAMPLES = 320;
+
+/** One anchor time with precomputed future − anchor flat deltas per step. */
+export type HistoricalAnalogSample = {
+  time: string;
+  timeMs: number;
+  /** futureDeltaByStep[0] = +1h, … [4] = +5h */
+  futureDeltaByStep: Float32Array[];
+};
+
+/** Cached analog corpus plus live-trend diagnostics for projection blending. */
+export type HistoricalAnalogLibrary = {
+  samples: HistoricalAnalogSample[];
+  builtAtMs: number;
+  cacheKey: string;
+  /** Future grids matched per horizon (+1h … +5h) across all anchor attempts. */
+  horizonFutureMatchCounts: number[];
+  /** Robust median recent slope from sensors (µg/m³ per hour, last 60–120 min). */
+  recentLiveTrendUgPerHour: number;
+  /** Number of sensors used in robust live-trend estimation. */
+  recentLiveTrendSensorCount: number;
+  /** Robust noise estimate (MAD of per-sensor slopes, µg/m³ per hour). */
+  recentLiveTrendNoise: number;
+};
+
+/** In-memory LRU-ish cache (max 4 entries) keyed by 10-minute bucket. */
+const analogLibraryCache = new Map<string, HistoricalAnalogLibrary>();
+
+/** Stable cache key for analog builds (~10 min TTL). */
+export function analogLibraryCacheKey(nowMs: number): string {
+  return `analog3-${Math.floor(nowMs / (10 * 60 * 1000))}`;
+}
+
+/** Read a cached library if the key is still warm. */
+export function getCachedAnalogLibrary(cacheKey: string): HistoricalAnalogLibrary | undefined {
+  return analogLibraryCache.get(cacheKey);
+}
+
+/** Store library and evict oldest entry when cache exceeds four keys. */
+function setCachedAnalogLibrary(cacheKey: string, library: HistoricalAnalogLibrary): void {
+  analogLibraryCache.set(cacheKey, library);
+  if (analogLibraryCache.size > 4) {
+    const oldest = [...analogLibraryCache.entries()].sort((a, b) => a[1].builtAtMs - b[1].builtAtMs)[0];
+    if (oldest) analogLibraryCache.delete(oldest[0]);
+  }
+}
+
+/** Normalize PurpleAir + Clarity rows into unified `SensorPoint`s. */
+function toSensorPoints(purple: PurpleAirRow[] | null, clarity: ClarityRow[] | null): SensorPoint[] {
+  const out: SensorPoint[] = [];
+  for (const r of purple ?? []) {
+    if (r.pm25 == null || !Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) continue;
+    out.push({
+      sensorIndex: r.sensor_index,
+      name: r.name ?? null,
+      latitude: r.latitude,
+      longitude: r.longitude,
+      pm25: r.pm25,
+      source: 'purple_air',
+      time: r.time,
+    });
+  }
+  for (const r of clarity ?? []) {
+    if (r.pm25 == null || !Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) continue;
+    out.push({
+      sensorIndex: r.sensor_index,
+      name: r.name ?? null,
+      latitude: r.latitude,
+      longitude: r.longitude,
+      pm25: r.pm25,
+      source: 'clarity',
+      time: r.time,
+    });
+  }
+  return out;
+}
+
+/** Bucket sensor readings by pipeline `time` ISO key. */
+function groupSensorsByTime(
+  purple: PurpleAirRow[] | null,
+  clarity: ClarityRow[] | null,
+): Map<string, SensorPoint[]> {
+  const grouped = new Map<string, SensorPoint[]>();
+  const append = (rows: SensorPoint[]) => {
+    for (const row of rows) {
+      if (!row.time) continue;
+      const existing = grouped.get(row.time);
+      if (existing) existing.push(row);
+      else grouped.set(row.time, [row]);
+    }
+  };
+  append(toSensorPoints(purple, null));
+  append(toSensorPoints(null, clarity));
+  return grouped;
+}
+
+/** Thin ascending timestamps to at most `maxCount` with `minGapMs` spacing. */
+function subsampleTimes(timesAsc: string[], minGapMs: number, maxCount: number): string[] {
+  const out: string[] = [];
+  let lastMs = -Infinity;
+  for (const iso of timesAsc) {
+    const ms = new Date(iso).getTime();
+    if (!Number.isFinite(ms)) continue;
+    if (out.length > 0 && ms - lastMs < minGapMs) continue;
+    out.push(iso);
+    lastMs = ms;
+    if (out.length >= maxCount) break;
+  }
+  return out;
+}
+
+/** Nearest sensor time within tolerance of `targetMs` (binary search + neighbors). */
+function closestTimeKey(timesMsSorted: number[], timeKeys: string[], targetMs: number): string | null {
+  if (timesMsSorted.length === 0) return null;
+  let lo = 0;
+  let hi = timesMsSorted.length - 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (timesMsSorted[mid] < targetMs) lo = mid + 1;
+    else hi = mid;
+  }
+  const candidates: number[] = [];
+  if (lo > 0) candidates.push(lo - 1);
+  candidates.push(lo);
+  if (lo < timesMsSorted.length - 1) candidates.push(lo + 1);
+
+  let best: string | null = null;
+  let bestDiff = FUTURE_MATCH_TOLERANCE_MS + 1;
+  for (const idx of candidates) {
+    const diff = Math.abs(timesMsSorted[idx] - targetMs);
+    if (diff <= FUTURE_MATCH_TOLERANCE_MS && diff < bestDiff) {
+      bestDiff = diff;
+      best = timeKeys[idx];
+    }
+  }
+  return best;
+}
+
+/** Krige sensor snapshot at `time` into a heatmap-sized `Pm25Grid2D`. */
+function buildPm25GridFromSensors(sensors: SensorPoint[], time: string): Pm25Grid2D | null {
+  if (sensors.length === 0) return null;
+  const rows = recomputeKrigingFromSensors(sensors, time, {
+    latSteps: HEATMAP_GRID_STEPS,
+    lonSteps: HEATMAP_GRID_STEPS,
+  });
+  return rowsToPm25Grid2D(rows);
+}
+
+/** Median pairwise PM₂.₅ slope (µg/m³ per hour) for one sensor series. */
+function robustSlopeUgPerHour(points: Array<{ timeMs: number; pm25: number }>): number | null {
+  if (points.length < 3) return null;
+  const sorted = [...points].sort((a, b) => a.timeMs - b.timeMs);
+  const slopes: number[] = [];
+  for (let i = 0; i < sorted.length; i += 1) {
+    for (let j = i + 1; j < sorted.length; j += 1) {
+      const dtHours = (sorted[j].timeMs - sorted[i].timeMs) / (60 * 60 * 1000);
+      if (!(dtHours > 0)) continue;
+      slopes.push((sorted[j].pm25 - sorted[i].pm25) / dtHours);
+    }
+  }
+  if (slopes.length === 0) return null;
+  return median(slopes);
+}
+
+/** Unweighted median. */
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Median absolute deviation from the sample median. */
+function medianAbsoluteDeviation(values: number[]): number {
+  if (values.length === 0) return 0;
+  const med = median(values);
+  const absDev = values.map((v) => Math.abs(v - med));
+  return median(absDev);
+}
+
+/** Robust live PM₂.₅ trend from the last 60–120 minutes of sensor data. */
+function computeRecentLiveTrend(
+  groupedByTime: Map<string, SensorPoint[]>,
+  nowMs: number,
+): {
+  trendUgPerHour: number;
+  sensorCount: number;
+  noiseUgPerHour: number;
+} {
+  const windowStart = nowMs - 120 * 60 * 1000;
+  const sensorSeries = new Map<string, Array<{ timeMs: number; pm25: number }>>();
+
+  for (const [iso, sensors] of groupedByTime.entries()) {
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t) || t < windowStart || t > nowMs) continue;
+    for (const s of sensors) {
+      if (!Number.isFinite(s.pm25)) continue;
+      const key = `${String(s.source)}:${String(s.sensorIndex)}`;
+      const arr = sensorSeries.get(key) ?? [];
+      arr.push({ timeMs: t, pm25: s.pm25 });
+      sensorSeries.set(key, arr);
+    }
+  }
+
+  const slopes: number[] = [];
+  for (const pts of sensorSeries.values()) {
+    const slope = robustSlopeUgPerHour(pts);
+    if (slope == null) continue;
+    slopes.push(slope);
+  }
+  if (slopes.length === 0) {
+    return { trendUgPerHour: 0, sensorCount: 0, noiseUgPerHour: 0 };
+  }
+  const trend = Math.max(-6, Math.min(6, median(slopes)));
+  return {
+    trendUgPerHour: trend,
+    sensorCount: slopes.length,
+    noiseUgPerHour: medianAbsoluteDeviation(slopes),
+  };
+}
+
+/** Anchor timestamp plus matched future grid keys (+1h … +5h). */
+type AnchorPlan = {
+  anchorTime: string;
+  anchorMs: number;
+  futureKeys: string[];
+};
+
+/** Outcome of `buildHistoricalAnalogLibrary` (cache hit or fresh build). */
+export type BuildHistoricalAnalogLibraryResult = {
+  library: HistoricalAnalogLibrary;
+  /** Non-null when pipeline time or sensor fetch failed. */
+  errorMessage: string | null;
+  fromCache: boolean;
+};
+
+export type AnalogLibraryProgressCallback = (progress: number, message: string) => void;
+
+/**
+ * Builds 7-day historical analogs with precomputed PM₂.₅ feature vectors and future deltas.
+ * `onProgress` reports 0..1 within the library build (fetch → grids → samples).
+ */
+export async function buildHistoricalAnalogLibrary(
+  nowMs = Date.now(),
+  onProgress?: AnalogLibraryProgressCallback,
+): Promise<BuildHistoricalAnalogLibraryResult> {
+  const report = (progress: number, message: string) => {
+    onProgress?.(Math.max(0, Math.min(1, progress)), message);
+  };
+
+  const cacheKey = analogLibraryCacheKey(nowMs);
+  const cached = getCachedAnalogLibrary(cacheKey);
+  if (cached) {
+    report(1, 'Using cached analog library…');
+    return { library: cached, errorMessage: null, fromCache: true };
+  }
+
+  report(0.05, 'Loading recent sensor history…');
+
+  const fromIso = new Date(nowMs - HISTORICAL_HOURS_BACK * 60 * 60 * 1000).toISOString();
+  const toIso = new Date(nowMs + minutesAheadForStep(PROJECTION_FUTURE_STEPS)).toISOString();
+
+  const [timesRes, sensorsRes] = await Promise.all([
+    fetchDistinctPipelineTimes(HISTORICAL_HOURS_BACK),
+    fetchSensorReadingsBetweenRecordedTimes(fromIso, toIso),
+  ]);
+
+  report(0.5, 'Loading recent sensor history…');
+
+  if (timesRes.error) {
+    return {
+      library: emptyLibrary(cacheKey, nowMs),
+      errorMessage: timesRes.error.message,
+      fromCache: false,
+    };
+  }
+
+  const grouped = groupSensorsByTime(sensorsRes.purpleAir, sensorsRes.clarity);
+  const recentLiveTrend = computeRecentLiveTrend(grouped, nowMs);
+  const allTimes = [...new Set([...timesRes.times, ...grouped.keys()])].sort(
+    (a, b) => new Date(a).getTime() - new Date(b).getTime(),
+  );
+
+  const sensorTimesAsc = allTimes.filter((t) => (grouped.get(t)?.length ?? 0) > 0);
+  const timeKeys: string[] = [];
+  const timesMsSorted: number[] = [];
+  for (const t of sensorTimesAsc) {
+    timeKeys.push(t);
+    timesMsSorted.push(new Date(t).getTime());
+  }
+
+  const anchorTimes = subsampleTimes(
+    allTimes.filter((t) => {
+      const ms = new Date(t).getTime();
+      return Number.isFinite(ms) && ms <= nowMs - MIN_SAMPLE_GAP_MS;
+    }),
+    MIN_SAMPLE_GAP_MS,
+    MAX_ANALOG_SAMPLES,
+  );
+
+  report(0.55, 'Building analog library…');
+
+  const neededTimes = new Set<string>();
+  const anchorPlans: AnchorPlan[] = [];
+  const horizonFutureMatchCounts = Array.from({ length: PROJECTION_FUTURE_STEPS }, () => 0);
+
+  for (const anchorTime of anchorTimes) {
+    const anchorMs = new Date(anchorTime).getTime();
+    if (!(grouped.get(anchorTime)?.length ?? 0)) continue;
+
+    const futureKeys: string[] = [];
+    let complete = true;
+    for (let step = 1; step <= PROJECTION_FUTURE_STEPS; step += 1) {
+      const targetMs = anchorMs + minutesAheadForStep(step) * 60 * 1000;
+      const futureKey = closestTimeKey(timesMsSorted, timeKeys, targetMs);
+      if (!futureKey) {
+        complete = false;
+        break;
+      }
+      futureKeys.push(futureKey);
+    }
+    if (!complete || futureKeys.length !== PROJECTION_FUTURE_STEPS) continue;
+
+    for (let step = 0; step < PROJECTION_FUTURE_STEPS; step += 1) {
+      horizonFutureMatchCounts[step] += 1;
+    }
+    neededTimes.add(anchorTime);
+    for (const fk of futureKeys) neededTimes.add(fk);
+    anchorPlans.push({ anchorTime, anchorMs, futureKeys });
+  }
+
+  const neededList = [...neededTimes];
+  const gridByTime = new Map<string, Pm25Grid2D>();
+
+  for (let ti = 0; ti < neededList.length; ti += 1) {
+    const t = neededList[ti];
+    const sensors = grouped.get(t);
+    if (!sensors || sensors.length === 0) continue;
+    const grid = buildPm25GridFromSensors(sensors, t);
+    if (!grid) continue;
+    gridByTime.set(t, grid);
+    if (ti % 3 === 0 || ti === neededList.length - 1) {
+      const frac = neededList.length > 0 ? (ti + 1) / neededList.length : 1;
+      report(0.55 + frac * 0.4, 'Building analog library…');
+    }
+  }
+
+  const samples: HistoricalAnalogSample[] = [];
+
+  for (let ai = 0; ai < anchorPlans.length; ai += 1) {
+    const { anchorTime, anchorMs, futureKeys } = anchorPlans[ai];
+    const anchorGrid = gridByTime.get(anchorTime);
+    if (!anchorGrid) continue;
+    const anchorFlat = pm25ValuesToFlat(anchorGrid.values);
+
+    const futureDeltaByStep: Float32Array[] = [];
+    for (const futureKey of futureKeys) {
+      const futureGrid = gridByTime.get(futureKey);
+      if (!futureGrid) {
+        futureDeltaByStep.length = 0;
+        break;
+      }
+      futureDeltaByStep.push(subtractFlat(pm25ValuesToFlat(futureGrid.values), anchorFlat));
+    }
+    if (futureDeltaByStep.length !== PROJECTION_FUTURE_STEPS) continue;
+
+    samples.push({
+      time: anchorTime,
+      timeMs: anchorMs,
+      futureDeltaByStep,
+    });
+  }
+
+  report(0.98, 'Building analog library…');
+
+  const library: HistoricalAnalogLibrary = {
+    samples,
+    builtAtMs: nowMs,
+    cacheKey,
+    horizonFutureMatchCounts,
+    recentLiveTrendUgPerHour: recentLiveTrend.trendUgPerHour,
+    recentLiveTrendSensorCount: recentLiveTrend.sensorCount,
+    recentLiveTrendNoise: recentLiveTrend.noiseUgPerHour,
+  };
+  setCachedAnalogLibrary(cacheKey, library);
+
+  return {
+    library,
+    errorMessage: sensorsRes.error?.message ?? null,
+    fromCache: false,
+  };
+}
+
+/** Zeroed library used when fetch fails or history is empty. */
+function emptyLibrary(cacheKey: string, nowMs: number): HistoricalAnalogLibrary {
+  return {
+    samples: [],
+    builtAtMs: nowMs,
+    cacheKey,
+    horizonFutureMatchCounts: Array.from({ length: PROJECTION_FUTURE_STEPS }, () => 0),
+    recentLiveTrendUgPerHour: 0,
+    recentLiveTrendSensorCount: 0,
+    recentLiveTrendNoise: 0,
+  };
+}

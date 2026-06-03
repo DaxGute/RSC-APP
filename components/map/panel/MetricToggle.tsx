@@ -20,7 +20,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-import type { Metric } from '../../../lib/metric';
+/** Active scalar shown on the map heatmap and detail panel (PM2.5 or EPA AQI). */
+export type Metric = 'pm25' | 'aqi';
 
 /** Animated thumb slide duration when switching PM2.5 ↔ AQI. */
 const SEGMENT_MS = 220;

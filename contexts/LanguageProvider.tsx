@@ -1,8 +1,8 @@
 /**
  * App-wide EN/ES language context. Wraps the shell in App.tsx.
  *
- * `isReady` gates GlobalLanguageSwitch until AsyncStorage load finishes so the
- * toggle does not flash the default language before the stored preference applies.
+ * `isReady` is false until AsyncStorage finishes loading so UI (e.g. the
+ * language toggle) does not flash the default before the saved preference applies.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -19,7 +19,7 @@ import {
   APP_LANGUAGE_STORAGE_KEY,
   type AppLanguage,
   isAppLanguage,
-} from '../lib/appLanguage';
+} from './appLanguage';
 
 type LanguageContextValue = {
   language: AppLanguage;

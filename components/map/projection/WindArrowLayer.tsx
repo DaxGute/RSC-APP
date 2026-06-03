@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Mapbox from '@rnmapbox/maps';
 import type { FeatureCollection, Point } from 'geojson';
 
-import { windAdvectionAngleDeg, type WindGridPoint } from '../../../lib/forecastWindGrid';
+import { windAdvectionAngleDeg, type WindGridPoint } from '../../../lib/map/projection/forecastWindGrid';
 
 /** Forecast wind grid slice for one projection step; rendered as Mapbox symbol layer. */
 type WindArrowLayerProps = {

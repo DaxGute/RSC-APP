@@ -3,7 +3,7 @@
  *
  * Scrollable hub: PM2.5 primer, expandable EPA AQI category table, interactive health
  * impacts (AqiHealthExplorer), and tap-to-expand YouTube learning cards. Copy and
- * level metadata come from lib/educationContent; resets expanded rows/videos on language change.
+ * level metadata come from lib/education/educationContent; resets expanded rows/videos on language change.
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
@@ -20,14 +20,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { useAppLanguage } from '../../contexts/LanguageProvider';
 import {
+  buildYouTubeEmbedHtml,
   educationCopy,
+  educationHubCardStyle,
+  educationTheme,
   youtubeThumbnailUri,
+  YOUTUBE_EMBED_ORIGIN,
   type EducationAqiLevel,
   type EducationAqiLevelId,
   type EducationVideoItem,
-} from '../../lib/educationContent';
-import { educationTheme } from '../../lib/educationTheme';
-import { buildYouTubeEmbedHtml, YOUTUBE_EMBED_ORIGIN } from '../../lib/youtubeEmbed';
+} from '../../lib/education/educationContent';
 import { AqiHealthExplorer } from './AqiHealthExplorer';
 import Animated, {
   Extrapolation,
@@ -42,7 +44,7 @@ const EXPAND_DURATION_MS = 280;
 /** Collapsed row shows only the colored category bar at this height. */
 const COLLAPSED_BAR_HEIGHT = 48;
 
-/** Inline WebView player for an expanded video card (embed HTML from lib/youtubeEmbed). */
+/** Inline WebView player for an expanded video card (embed HTML from educationContent). */
 function YouTubeEmbed({ videoId }: { videoId: string }) {
   return (
     <WebView
@@ -321,9 +323,6 @@ export function EducationHubScreen() {
     setActiveVideoId((current) => (current === videoId ? null : videoId));
   }, []);
 
-  const onHealthExplorerScrubBegin = useCallback(() => setHealthExplorerScrubbing(true), []);
-  const onHealthExplorerScrubEnd = useCallback(() => setHealthExplorerScrubbing(false), []);
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
@@ -337,7 +336,7 @@ export function EducationHubScreen() {
             <View style={styles.titleIconWrap}>
               <Ionicons name="school" size={22} color={educationTheme.accentColor} />
             </View>
-            <Text style={styles.pageTitle}>Education</Text>
+            <Text style={styles.pageTitle}>{copy.pageTitle}</Text>
           </View>
           <Text style={styles.pageSubtitle}>{copy.pageSubtitle}</Text>
         </View>
@@ -376,11 +375,7 @@ export function EducationHubScreen() {
           title={copy.healthSectionTitle}
           subtitle={copy.healthSectionSubtitle}
         >
-          <AqiHealthExplorer
-            copy={copy.healthExplorer}
-            onScrubBegin={onHealthExplorerScrubBegin}
-            onScrubEnd={onHealthExplorerScrubEnd}
-          />
+          <AqiHealthExplorer copy={copy.healthExplorer} onScrubbingChange={setHealthExplorerScrubbing} />
         </EducationSection>
 
         <EducationSection
@@ -419,13 +414,8 @@ const styles = StyleSheet.create({
     gap: educationTheme.sectionGap,
   },
   heroCard: {
-    backgroundColor: educationTheme.cardBackground,
-    borderRadius: educationTheme.cardRadius,
-    borderWidth: 1,
-    borderColor: educationTheme.cardBorderColor,
-    padding: educationTheme.cardPadding,
+    ...educationHubCardStyle,
     gap: 10,
-    ...educationTheme.shadow,
   },
   titleRow: {
     flexDirection: 'row',
@@ -454,13 +444,8 @@ const styles = StyleSheet.create({
     color: educationTheme.bodyColor,
   },
   sectionCard: {
-    backgroundColor: educationTheme.cardBackground,
-    borderRadius: educationTheme.cardRadius,
-    borderWidth: 1,
-    borderColor: educationTheme.cardBorderColor,
-    padding: educationTheme.cardPadding,
+    ...educationHubCardStyle,
     gap: 6,
-    ...educationTheme.shadow,
   },
   sectionStepLabel: {
     fontSize: 11,

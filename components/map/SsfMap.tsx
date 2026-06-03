@@ -4,15 +4,19 @@
  */
 import { Ionicons } from '@expo/vector-icons';
 import { forwardRef, useImperativeHandle } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { NativeModules, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAppLanguage } from '../../contexts/LanguageProvider';
-import { isMapboxNativeAvailable } from '../../lib/mapboxNative';
-import { mapScreenCopy } from '../../lib/mapScreenCopy';
+import { mapScreenContent } from '../../lib/map/mapScreenContent';
 import type { SsfMapHandle, SsfMapProps } from './SsfMapMapbox';
 
 export type { MapSelectDetail, SsfMapHandle, SsfMapProps } from './SsfMapMapbox';
+
+/** True when @rnmapbox/maps native module is linked (dev build), not in Expo Go. */
+function isMapboxNativeAvailable(): boolean {
+  return NativeModules.RNMBXModule != null;
+}
 
 /** Expo Go placeholder; same ref API as SsfMapMapbox with no-op camera/zoom. */
 const SsfMapExpoGoFallback = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMapExpoGoFallback(_props, ref) {
@@ -63,7 +67,7 @@ export function MapScaleActions({
   overlayTop,
 }: MapScaleActionsProps) {
   const { language } = useAppLanguage();
-  const copy = mapScreenCopy[language];
+  const content = mapScreenContent[language];
   const insets = useSafeAreaInsets();
   const showZoom = onZoomIn != null && onZoomOut != null;
   const showActions = onNotificationPress != null || onModelingPress != null || showZoom;
@@ -85,11 +89,11 @@ export function MapScaleActions({
           onPress={onNotificationPress}
           style={({ pressed }) => [scaleStyles.actionBtn, pressed && scaleStyles.actionBtnPressed]}
           accessibilityRole="button"
-          accessibilityLabel={copy.mapAlertButtonA11y}
+          accessibilityLabel={content.mapAlertButtonA11y}
         >
           <Ionicons name="notifications-outline" size={16} color="#1f2937" />
           <Text style={scaleStyles.actionLabel} numberOfLines={1}>
-            {copy.mapAlertButton}
+            {content.mapAlertButton}
           </Text>
         </Pressable>
       ) : null}
@@ -117,7 +121,7 @@ export function MapScaleActions({
               pressed && canZoomIn && scaleStyles.zoomPillHalfPressed,
             ]}
             accessibilityRole="button"
-            accessibilityLabel={copy.zoomInA11y}
+            accessibilityLabel={content.zoomInA11y}
           >
             <Ionicons name="add" size={16} color={canZoomIn ? '#1f2937' : '#94a3b8'} />
           </Pressable>
@@ -131,7 +135,7 @@ export function MapScaleActions({
               pressed && canZoomOut && scaleStyles.zoomPillHalfPressed,
             ]}
             accessibilityRole="button"
-            accessibilityLabel={copy.zoomOutA11y}
+            accessibilityLabel={content.zoomOutA11y}
           >
             <Ionicons name="remove" size={16} color={canZoomOut ? '#1f2937' : '#94a3b8'} />
           </Pressable>

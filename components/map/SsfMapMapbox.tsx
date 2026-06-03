@@ -17,19 +17,19 @@ import type { FeatureCollection, Point } from 'geojson';
 import { Animated, LayoutChangeEvent, Pressable, StyleSheet, View } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 
-import type { CurrentKrigingRow } from '../../lib/database.types';
-import { SSF_BBOX } from '../../lib/constants/ssf';
-import { pm25BreakpointCategory, pm25ToAqi } from '../../lib/aqiUtils';
-import type { MapRegion } from '../../lib/mapRegionFromData';
+import type { CurrentKrigingRow } from '../../lib/shell/supabase';
+import { SSF_BBOX } from '../../lib/map/mapRegionFromData';
+import { pm25BreakpointCategory, pm25ToAqi } from '../../lib/shell/airQualityBreakpoints';
+import type { MapRegion } from '../../lib/map/mapRegionFromData';
 import {
   findSensorNear,
   isValidSensorIndex,
-  parseSensorIndex,
+  normalizeSensorIndex,
   SENSOR_FEATURE_HIT_KM,
   SENSOR_MAP_HIT_KM,
   sensorDetailFromPoint,
-} from '../../lib/sensorIndex';
-import type { SensorPoint } from '../../lib/sensorTypes';
+  type SensorPoint,
+} from '../../lib/map/sensorTypes';
 import { KrigingHeatmapLayer } from './KrigingHeatmapLayer';
 
 /** Passed to onSelectCoordinate so the screen can place callouts and detect sensor taps. */
@@ -177,7 +177,7 @@ export const SsfMap = forwardRef<SsfMapHandle, SsfMapProps>(function SsfMap(
       featureProps?: { sensor_index?: unknown; source?: unknown; name?: unknown },
       maxKm = SENSOR_FEATURE_HIT_KM,
     ) => {
-      const parsedIndex = featureProps ? parseSensorIndex(featureProps.sensor_index) : null;
+      const parsedIndex = featureProps ? normalizeSensorIndex(featureProps.sensor_index) : null;
       if (parsedIndex != null) {
         const source =
           typeof featureProps?.source === 'string' ? featureProps.source : undefined;

@@ -11,12 +11,16 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { useAppLanguage } from '../../contexts/LanguageProvider';
-import {
-  GLOBAL_LANGUAGE_SWITCH_BOTTOM_OFFSET,
-  GLOBAL_LANGUAGE_SWITCH_HOST_LIFT,
-  GLOBAL_LANGUAGE_SWITCH_TRACK_EXTENSION,
-} from '../../lib/constants/appLayout';
-import { type AppLanguage, appLanguageToggleLabels } from '../../lib/appLanguage';
+import { type AppLanguage, appLanguageToggleLabels } from '../../contexts/appLanguage';
+
+/** Matches `App.tsx` tab bar reserved height. */
+const ROOT_TAB_BAR_RESERVED_HEIGHT = 78;
+const GLOBAL_LANGUAGE_SWITCH_TAB_GAP = 8;
+const GLOBAL_LANGUAGE_SWITCH_HOST_LIFT = 8;
+const GLOBAL_LANGUAGE_SWITCH_BOTTOM_OFFSET =
+  ROOT_TAB_BAR_RESERVED_HEIGHT + GLOBAL_LANGUAGE_SWITCH_TAB_GAP;
+const GLOBAL_LANGUAGE_SWITCH_TRACK_EXTENSION =
+  GLOBAL_LANGUAGE_SWITCH_TAB_GAP + GLOBAL_LANGUAGE_SWITCH_HOST_LIFT;
 
 type Segment = {
   language: AppLanguage;

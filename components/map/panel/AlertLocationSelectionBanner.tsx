@@ -5,7 +5,7 @@ import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-nativ
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAppLanguage } from '../../../contexts/LanguageProvider';
-import { mapScreenCopy } from '../../../lib/mapScreenCopy';
+import { mapScreenContent } from '../../../lib/map/mapScreenContent';
 
 /** Off-screen start/end for slide-in/out (px above safe area). */
 const BANNER_SLIDE_OFFSET = -64;
@@ -18,7 +18,7 @@ export type AlertLocationSelectionBannerProps = {
 /** Slides down from the top while alert-location picking is active; cancel exits the flow. */
 export function AlertLocationSelectionBanner({ visible, onCancel }: AlertLocationSelectionBannerProps) {
   const { language } = useAppLanguage();
-  const copy = mapScreenCopy[language];
+  const content = mapScreenContent[language];
   const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(BANNER_SLIDE_OFFSET)).current;
   const opacity = useRef(new Animated.Value(0)).current;
@@ -85,12 +85,12 @@ export function AlertLocationSelectionBanner({ visible, onCancel }: AlertLocatio
       ]}
     >
       <View style={styles.card}>
-        <Text style={styles.message}>{copy.alertLocationBanner}</Text>
+        <Text style={styles.message}>{content.alertLocationBanner}</Text>
         <Pressable
           onPress={onCancel}
           style={({ pressed }) => [styles.closeBtn, pressed && styles.closeBtnPressed]}
           accessibilityRole="button"
-          accessibilityLabel={copy.cancelAlertLocationSelection}
+          accessibilityLabel={content.cancelAlertLocationSelection}
           hitSlop={8}
         >
           <Ionicons name="close" size={18} color="#334155" />

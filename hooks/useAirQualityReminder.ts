@@ -9,20 +9,57 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { aqiMeetsReminderThreshold, pm25ToAqi, reminderBandToAqiThreshold } from '../lib/aqiUtils';
-import { ensureAnonymousSession } from '../lib/ensureAnonymousSession';
-import { supabase } from '../lib/supabase';
-import {
-  deleteUserNotificationSettings,
-  upsertUserNotificationSettings,
-} from '../lib/userNotificationSettings';
-import type { CurrentKrigingRow } from '../lib/database.types';
-import { computeSsfSelection } from '../lib/ssfSelection';
-import type { SensorPoint } from '../lib/sensorTypes';
+import { aqiMeetsReminderThreshold, pm25ToAqi, reminderBandToAqiThreshold } from '../lib/shell/airQualityBreakpoints';
+import { computeSsfSelection } from '../components/map/panel/AqiPanel';
+import type { CurrentKrigingRow, Database } from '../lib/shell/supabase';
+import { ensureAnonymousSession } from '../lib/shell/supabase';
+import { supabase } from '../lib/shell/supabase';
+import type { SensorPoint } from '../lib/map/sensorTypes';
 
-const STORAGE_KEY = '@rss_air_quality_reminder_v1';
+/** AsyncStorage key for the on-device reminder (survives app restarts). */
+const STORAGE_KEY = '@rsc_air_quality_reminder_v1';
 
+type UserNotificationSettingsTable =
+  Database['public']['Tables']['user_notification_settings'];
+
+/** Narrow DB shape so PostgREST `Insert`/`Update` generics resolve (multi-table `Database` unions break inference). */
+type NotificationSettingsDb = {
+  public: {
+    Tables: {
+      user_notification_settings: UserNotificationSettingsTable;
+    };
+    Views: Database['public']['Views'];
+    Functions: Database['public']['Functions'];
+  };
+};
+
+const notificationDb = supabase as SupabaseClient<NotificationSettingsDb>;
+
+/** Insert or replace the signed-in user’s alert row (create + update). */
+async function upsertUserNotificationSettings(
+  payload: UserNotificationSettingsTable['Insert'],
+): Promise<UserNotificationSettingsTable['Row'][]> {
+  const { data, error } = await notificationDb
+    .from('user_notification_settings')
+    .upsert(payload, { onConflict: 'user_id' })
+    .select();
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+/** Remove the signed-in user’s alert row from the database. */
+async function deleteUserNotificationSettings(userId: string): Promise<void> {
+  const { error } = await notificationDb
+    .from('user_notification_settings')
+    .delete()
+    .eq('user_id', userId);
+  if (error) throw error;
+}
+
+/** User-configured map spot + EPA band threshold for local and server push alerts. */
 export type AirQualityReminder = {
   lat: number;
   lon: number;
@@ -34,6 +71,7 @@ export type AirQualityReminder = {
   lastNotifiedAt?: number;
 };
 
+// Foreground: still show banner/list when a notification arrives while the app is open.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -44,6 +82,7 @@ Notifications.setNotificationHandler({
   }),
 });
 
+/** Compare map tap coordinates to the saved reminder spot (~1 m tolerance). */
 function coordsMatch(
   a: { lat: number; lon: number },
   b: { lat: number; lon: number },
@@ -52,6 +91,7 @@ function coordsMatch(
   return Math.abs(a.lat - b.lat) < eps && Math.abs(a.lon - b.lon) < eps;
 }
 
+/** Required on Android 8+ before scheduling notifications with a channel id. */
 async function ensureAndroidChannel() {
   if (Platform.OS !== 'android') return;
   await Notifications.setNotificationChannelAsync('air-quality', {
@@ -62,6 +102,7 @@ async function ensureAndroidChannel() {
   });
 }
 
+/** Returns true only if the user granted notification permission. */
 async function requestNotifyPermission(): Promise<boolean> {
   const { status: existing } = await Notifications.getPermissionsAsync();
   if (existing === 'granted') return true;
@@ -116,19 +157,29 @@ async function writeAlertToSupabase(
   await upsertUserNotificationSettings(payload);
 }
 
+/**
+ * Map-tab AQI reminders: AsyncStorage + Supabase push registration + local edge-triggered alerts.
+ *
+ * @param sensors - Live display sensors from `useSsfAirQuality` (already switched for scrubber).
+ * @param kriging - Live display kriging from the same hook.
+ * @param viewingLive - Must be true to evaluate thresholds (avoids false alerts while scrubbing).
+ */
 export function useAirQualityReminder(
   sensors: SensorPoint[],
   kriging: CurrentKrigingRow[],
   viewingLive: boolean,
 ) {
   const [reminder, setReminderState] = useState<AirQualityReminder | null>(null);
+  /** Gate threshold logic until AsyncStorage hydration finishes. */
   const loadedRef = useRef(false);
+  /** Tracks last poll's above/below state for edge-triggered local notifications. */
   const thresholdCrossRef = useRef<{ key: string; wasAbove: boolean } | null>(null);
 
   useEffect(() => {
     void ensureAndroidChannel();
   }, []);
 
+  // Hydrate reminder from device storage on mount.
   useEffect(() => {
     void (async () => {
       try {
@@ -167,6 +218,7 @@ export function useAirQualityReminder(
     })();
   }, []);
 
+  /** Mirror in-memory reminder to AsyncStorage (null clears the key). */
   const persist = useCallback(async (next: AirQualityReminder | null) => {
     if (next == null) {
       await AsyncStorage.removeItem(STORAGE_KEY);
@@ -175,6 +227,10 @@ export function useAirQualityReminder(
     }
   }, []);
 
+  /**
+   * Save reminder locally and register server push. Rolls back state if Supabase write fails.
+   * categoryIndex 1–5 maps to EPA bands (not 0 = Good).
+   */
   const setReminder = useCallback(
     async (lat: number, lon: number, categoryIndex: number, cooldownMinutes = 60) => {
       if (categoryIndex < 1 || categoryIndex > 5) {
@@ -188,6 +244,7 @@ export function useAirQualityReminder(
       if (!ok) return;
 
       setReminderState((prev) => {
+        // Keep cooldown timestamp when only re-saving the same spot + band.
         const sameSpot =
           prev != null &&
           coordsMatch({ lat, lon }, prev) &&
@@ -217,6 +274,7 @@ export function useAirQualityReminder(
     [persist],
   );
 
+  /** Remove local reminder and delete the user's notification row in Supabase. */
   const clearReminder = useCallback(async () => {
     setReminderState(null);
     await persist(null);
@@ -281,6 +339,7 @@ export function useAirQualityReminder(
     thresholdCrossRef.current = { key, wasAbove: above };
   }, [reminder, sensors, kriging, viewingLive, persist]);
 
+  /** Whether the given map coordinate is the active reminder pin (UI highlight). */
   const isReminderForCoordinate = useCallback(
     (coord: { lat: number; lon: number } | null) => {
       if (coord == null || reminder == null) return false;

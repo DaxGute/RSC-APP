@@ -12,15 +12,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, StyleSheet, View } from 'react-native';
 import { Calendar } from 'react-native-calendars';
 
-import { aqiCategory } from '../../lib/aqiUtils';
+import { aqiCategory } from '../../lib/shell/airQualityBreakpoints';
 import {
   buildDaySummaries,
   dateKeyFromIso,
-  formatMonthLabel,
   loadCalendarRowsForMonth,
   type DaySummary,
-} from '../../lib/aqiCalendarData';
-import { dateKeyLocal, enumerateDaysInMonth } from '../../lib/aqiTenMinuteAggregation';
+} from '../../lib/graph/aqiCalendarData';
+import { dateKeyLocal, enumerateDaysInMonth, monthKeyFromDate } from '../../lib/graph/aqiHourlyAggregation';
 
 const DAY_FADE_DURATION_MS = 500; // ms for each day cell to reach full opacity
 const DAY_FADE_STAGGER_MS = 80; // delay between adjacent days in the fade sequence
@@ -30,7 +29,6 @@ export type AqiColoredCalendarProps = {
   timelineTimesAsc: string[];
   timelineIndex: number;
   liveAverageAqi: number | null;
-  onPickRecordedTime?: (recordedTime: string) => void;
   /** When set, visible month is controlled by the parent and does not follow timeline selection. */
   monthKey?: string;
   /** When set, parent is notified when the visible month changes (YYYY-MM). */
@@ -76,10 +74,7 @@ export function AqiColoredCalendar({
     };
   }, [selectedDateKey]);
 
-  const currentMonthKey = useMemo(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${`${now.getMonth() + 1}`.padStart(2, '0')}`;
-  }, []);
+  const currentMonthKey = useMemo(() => monthKeyFromDate(new Date()), []);
 
   const isMonthControlled = monthKey != null;
   const activeMonthKey = isMonthControlled ? monthKey : (visibleMonth ?? initialDate.slice(0, 7));
@@ -176,7 +171,7 @@ export function AqiColoredCalendar({
         disableTouchEvent?: boolean;
       }
     > = {};
-    for (const day of enumerateDaysInMonth(activeMonthKey)) {
+    for (const day of activeMonthDays) {
       if (day > maxDate) {
         out[day] = { disabled: true, disableTouchEvent: true };
         continue;
@@ -226,7 +221,7 @@ export function AqiColoredCalendar({
     }
     return out;
   }, [
-    activeMonthKey,
+    activeMonthDays,
     effectiveDaySummaries,
     maxDate,
     opacityForDay,
@@ -279,7 +274,7 @@ export function AqiColoredCalendar({
         for (const [dayKey, summary] of summaries) dayAqiCacheRef.current.set(dayKey, summary);
 
         const monthSummary = new Map<string, DaySummary>();
-        for (const day of enumerateDaysInMonth(activeMonthKey)) {
+        for (const day of activeMonthDays) {
           const summary = dayAqiCacheRef.current.get(day);
           if (summary) monthSummary.set(day, summary);
         }
@@ -319,7 +314,7 @@ export function AqiColoredCalendar({
           disableAllTouchEventsForDisabledDays
           markingType="custom"
           markedDates={markedDates}
-          onMonthChange={(m) => setActiveMonthKey(`${m.year}-${`${m.month}`.padStart(2, '0')}`)}
+          onMonthChange={(m) => setActiveMonthKey(monthKeyFromDate(new Date(m.year, m.month - 1, 1)))}
           theme={{
             calendarBackground: '#f8fafc',
             monthTextColor: '#0f172a',

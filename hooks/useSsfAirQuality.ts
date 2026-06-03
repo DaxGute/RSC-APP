@@ -9,9 +9,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { POLL_INTERVAL_MS, ROLLING_24H_TIME_WINDOW_BUFFER_MS } from '../lib/constants/ssf';
-import type { ClarityRow, CurrentKrigingRow, DailySensorAqiRow, PurpleAirRow } from '../lib/database.types';
-import { pm25ToAqi } from '../lib/aqiUtils';
+import type { ClarityRow, CurrentKrigingRow, DailySensorAqiRow, PurpleAirRow } from '../lib/shell/supabase';
+import { pm25ToAqi } from '../lib/shell/airQualityBreakpoints';
 import {
   fetchDistinctPipelineTimes,
   fetchDailySensorAqiAtRecordedTime,
@@ -19,17 +18,21 @@ import {
   fetchSensorReadingsBetweenRecordedTimes,
   fetchSensorReadingsAtRecordedTime,
   type FetchError,
-} from '../lib/fetchAirQuality';
-import { recomputeKrigingFromSensors } from '../lib/recomputeKriging';
-import { HEATMAP_GRID_STEPS } from '../lib/resolveHeatmapGrid';
-import { normalizeSensorIndex } from '../lib/sensorIndex';
-import type { SensorPoint } from '../lib/sensorTypes';
+} from '../lib/shell/fetchAirQuality';
+import { HEATMAP_GRID_STEPS, recomputeKrigingFromSensors } from '../lib/map/recomputeKriging';
+import { normalizeSensorIndex, type SensorPoint } from '../lib/map/sensorTypes';
 
-export type { SensorPoint, SensorSource } from '../lib/sensorTypes';
+export type { SensorPoint, SensorSource } from '../lib/map/sensorTypes';
 
+/** Live sensor poll interval (PurpleAir + Clarity). */
+const POLL_INTERVAL_MS = 30_000;
+/** Extra window on rolling 24h queries so pipeline `time` and client clocks do not clip rows. */
+const ROLLING_24H_TIME_WINDOW_BUFFER_MS = 15 * 60 * 1000;
 /** Rolling window for the map timeline scrubber and live poll queries. */
 const TIMELINE_HOURS_BACK = 24;
+/** Grid resolution for client-side kriging on historical slots (matches heatmap). */
 const HISTORICAL_KRIGING_GRID_STEPS = HEATMAP_GRID_STEPS;
+/** Nearest sensors used per kriging cell when recomputing offline. */
 const HISTORICAL_KRIGING_NEIGHBORS = 4;
 
 /** Query window with buffer so pipeline `time` values and client clock skew do not clip edge rows. */
@@ -42,6 +45,7 @@ function rollingRecordedTimeBounds(): { fromIso: string; toIso: string } {
   };
 }
 
+/** Public shape returned by `useSsfAirQuality` (minus `refresh`). */
 export type SsfAirQualityState = {
   purpleAir: PurpleAirRow[];
   clarity: ClarityRow[];
@@ -63,6 +67,7 @@ export type SsfAirQualityState = {
   averageAqiTimeseries: Array<{ time: string; avgAqi: number }>;
 };
 
+/** Normalize PurpleAir + Clarity rows into map-ready points; drops invalid coords/pm25. */
 function toSensorPoints(
   purple: PurpleAirRow[] | null,
   clarity: ClarityRow[] | null,
@@ -111,6 +116,7 @@ function toSensorPoints(
   return out;
 }
 
+/** Same as `toSensorPoints`, but for pre-aggregated `daily_sensor_aqi` rows. */
 function toDailySensorPoints(rows: DailySensorAqiRow[] | null): SensorPoint[] {
   const out: SensorPoint[] = [];
   for (const r of rows ?? []) {
@@ -136,6 +142,7 @@ function toDailySensorPoints(rows: DailySensorAqiRow[] | null): SensorPoint[] {
   return out;
 }
 
+/** Bucket daily AQI rows by pipeline `time` for timeline cache seeding. */
 function groupDailyRowsByTime(rows: DailySensorAqiRow[]): Map<string, DailySensorAqiRow[]> {
   const grouped = new Map<string, DailySensorAqiRow[]>();
   for (const row of rows) {
@@ -148,6 +155,7 @@ function groupDailyRowsByTime(rows: DailySensorAqiRow[]): Map<string, DailySenso
   return grouped;
 }
 
+/** Group live sensor readings by `time` so each scrubber slot has a full snapshot. */
 function groupSensorsByRecordedTime(
   purple: PurpleAirRow[] | null,
   clarity: ClarityRow[] | null,
@@ -166,6 +174,7 @@ function groupSensorsByRecordedTime(
   return grouped;
 }
 
+/** Union timeline ISO strings and sort oldest → newest. */
 function mergeTimesAsc(prev: string[], additions: readonly string[]): string[] {
   const s = new Set(prev);
   for (const a of additions) {
@@ -174,6 +183,7 @@ function mergeTimesAsc(prev: string[], additions: readonly string[]): string[] {
   return Array.from(s).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
 }
 
+/** Per-timestamp mean AQI across all sensors (graph tab timeseries). */
 function buildAverageAqiTimeseries(
   purple: PurpleAirRow[] | null,
   clarity: ClarityRow[] | null,
@@ -214,9 +224,15 @@ function trimTimesToRollingDay(timesAsc: string[], preserveIso?: string | null):
   return trimmed;
 }
 
+/** Cached or fetched display payload for one timeline timestamp. */
 type HistoricalSnapshot = { sensors: SensorPoint[]; kriging: CurrentKrigingRow[]; insufficientData: boolean };
 
+/**
+ * Single source of truth for SSF air quality: live polling, timeline scrubbing, and kriging.
+ * Mount once in App.tsx; pass state into map and graph screens.
+ */
 export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promise<void> } {
+  // Live-end state: updated every poll; drives map/graph when scrubber is at newest time.
   const [purpleAir, setPurpleAir] = useState<PurpleAirRow[]>([]);
   const [clarity, setClarity] = useState<ClarityRow[]>([]);
   const [kriging, setKriging] = useState<CurrentKrigingRow[]>([]);
@@ -224,6 +240,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
 
+  // Timeline scrubber: index into `timelineTimesAsc`; historical branch uses `historicalDisplay`.
   const [timelineTimesAsc, setTimelineTimesAsc] = useState<string[]>([]);
   const [timelineIndex, setTimelineIndex] = useState(0);
   const [historicalDisplay, setHistoricalDisplay] = useState<HistoricalSnapshot | null>(null);
@@ -231,14 +248,18 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
   const [insufficientData, setInsufficientData] = useState(false);
 
   const historicalCacheRef = useRef<Map<string, HistoricalSnapshot>>(new Map());
+  /** Fallback kriging when a sparse historical slot cannot be recomputed client-side. */
   const latestKrigingRef = useRef<CurrentKrigingRow[]>([]);
+  /** True once timeline index has been initialized to the live end at least once. */
   const timelineInitRef = useRef(false);
   /** Set by selectRecordedTime so trimTimesToRollingDay does not drop calendar picks outside 24h. */
   const pinnedHistoricalTimeRef = useRef<string | null>(null);
+  /** Ignore async setState after unmount (poll + fetch effects). */
   const mounted = useRef(true);
   /** After the first successful map payload, background polls skip the loading overlay. */
   const hasDisplayedMapDataRef = useRef(false);
 
+  /** Client-side kriging for one timestamp (live latest slot and historical scrub). */
   const recomputeHistoricalKriging = useCallback((sensorRows: SensorPoint[], recordedTime: string) => {
     if (sensorRows.length === 0) return [];
     return recomputeKrigingFromSensors(sensorRows, recordedTime, {
@@ -276,6 +297,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     })();
   }, []);
 
+  // Boot: prefetch daily_sensor_aqi snapshots into historicalCacheRef for faster scrubbing.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -311,6 +333,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     };
   }, []);
 
+  /** Poll PurpleAir + Clarity for the rolling window; refresh live state and warm the cache. */
   const loadSensors = useCallback(async () => {
     const showLoadingOverlay = !hasDisplayedMapDataRef.current;
     if (showLoadingOverlay) setLoading(true);
@@ -385,6 +408,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     pinnedHistoricalTimeRef.current = null;
   }, [viewingLive]);
 
+  /** Jump scrubber to a calendar-picked ISO time (may lie outside the default 24h window). */
   const selectRecordedTime = useCallback((recordedTime: string) => {
     pinnedHistoricalTimeRef.current = recordedTime;
     setTimelineTimesAsc((prev) => {
@@ -395,6 +419,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     });
   }, []);
 
+  // When scrubber leaves live end: resolve snapshot from cache or Supabase fetch.
   useEffect(() => {
     if (timelineTimesAsc.length === 0) return;
     const liveEnd = timelineTimesAsc.length - 1;
@@ -472,6 +497,7 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
   // Public API: swap live poll state vs historical snapshot here so screens stay dumb.
   const displaySensors = viewingLive ? sensors : (historicalDisplay?.sensors ?? []);
   const displayKriging = viewingLive ? kriging : (historicalDisplay?.kriging ?? []);
+  /** Mean AQI at the live-end sensor set (panel headline when viewing live). */
   const liveAverageAqi = useMemo(() => {
     if (sensors.length === 0) return null;
     const avgPm = sensors.reduce((acc, s) => acc + s.pm25, 0) / sensors.length;

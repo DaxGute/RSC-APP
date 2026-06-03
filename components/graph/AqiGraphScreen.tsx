@@ -4,7 +4,7 @@
  * from useSsfAirQuality via props (purpleAir, clarity, timelineTimesAsc, timelineIndex, liveAverageAqi).
  *
  * Three sections:
- *  1. Rolling 7-day hourly AQI bars (per-timestamp sensor average, then 10-min slot average across 7 days)
+ *  1. Rolling 7-day hourly AQI bars (per-timestamp sensor average, then hourly slot average across 7 days)
  *  2. AQI-colored calendar (AqiColoredCalendar) with per-month category breakdown
  *  3. Yearly PM2.5 by month chart (current year vs prior-year proxy months)
  */
@@ -14,27 +14,26 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Line } from 'react-native-svg';
 
-import { dailyAqiMapFromDaySummaries, type DaySummary } from '../../lib/aqiCalendarData';
+import { dailyAqiMapFromDaySummaries, type DaySummary } from '../../lib/graph/aqiCalendarData';
 import {
   buildAverageAqiTimeseries,
   computeRollingWeekHourlyAverages,
+  enumerateDaysInMonth,
+  monthKeyFromDate,
   ROLLING_WEEK_DAYS,
   countDaysByCategory,
-  DAY_AQI_CATEGORY_META,
-  enumerateDaysInMonth,
-  type DayAqiCategory,
-} from '../../lib/aqiTenMinuteAggregation';
-import type { ClarityRow, PurpleAirRow } from '../../lib/database.types';
-import { aqiCategory, pm25ToAqi } from '../../lib/aqiUtils';
-import { fetchDailySensorAqiCalendarRows, fetchSensorReadingsBetweenRecordedTimes } from '../../lib/fetchAirQuality';
+} from '../../lib/graph/aqiHourlyAggregation';
+import type { ClarityRow, PurpleAirRow } from '../../lib/shell/supabase';
+import { AQI_CATEGORY_BANDS, aqiCategory, pm25ToAqi } from '../../lib/shell/airQualityBreakpoints';
+import { fetchDailySensorAqiCalendarRows, fetchSensorReadingsBetweenRecordedTimes } from '../../lib/shell/fetchAirQuality';
 import {
   buildDailyPm25Map,
   buildYearlyPm25ByMonthChart,
   filterDailyPm25RowsForYear,
-} from '../../lib/yearlyPm25ByMonth';
+} from '../../lib/graph/yearlyPm25ByMonth';
 import { useAppLanguage } from '../../contexts/LanguageProvider';
-import { aqiGraphCopy } from '../../lib/aqiGraphContent';
-import { educationTheme } from '../../lib/educationTheme';
+import { aqiGraphCopy } from '../../lib/graph/aqiGraphContent';
+import { educationTheme } from '../../lib/education/educationContent';
 import { AqiColoredCalendar } from './AqiColoredCalendar';
 
 type AqiGraphScreenProps = {
@@ -46,9 +45,8 @@ type AqiGraphScreenProps = {
   loading: boolean;
 };
 
-const ROLLING_HOUR_CHART_HEIGHT = 100;
+const CHART_HEIGHT = 100;
 const ROLLING_HOUR_LABEL_HOURS = [0, 6, 12, 18];
-const YEARLY_PM25_CHART_HEIGHT = 100;
 
 function formatRollingHourLabel(hour: number): string {
   if (hour === 0) return '12a';
@@ -57,14 +55,18 @@ function formatRollingHourLabel(hour: number): string {
   return `${hour - 12}p`;
 }
 
-function rollingHourBarHeight(avgAqi: number, chartPeakAqi: number): number {
-  const scale = Math.max(1, chartPeakAqi);
-  return Math.max(4, (avgAqi / scale) * ROLLING_HOUR_CHART_HEIGHT);
+function scaleBarHeight(value: number, peak: number, chartHeight = CHART_HEIGHT): number {
+  const scale = Math.max(1, peak);
+  return Math.max(4, (value / scale) * chartHeight);
 }
 
-function yearlyPm25BarHeight(avgPm25: number, chartPeakPm25: number): number {
-  const scale = Math.max(1, chartPeakPm25);
-  return Math.max(4, (avgPm25 / scale) * YEARLY_PM25_CHART_HEIGHT);
+function useChartWidth(): [number, (e: LayoutChangeEvent) => void] {
+  const [width, setWidth] = useState(0);
+  const onLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = e.nativeEvent.layout.width;
+    if (Number.isFinite(w) && w > 0) setWidth(w);
+  }, []);
+  return [width, onLayout];
 }
 
 type GraphSectionProps = {
@@ -74,7 +76,6 @@ type GraphSectionProps = {
   children: ReactNode;
 };
 
-/** Card wrapper shared by each analytics section on the graph tab. */
 function GraphSection({ sectionLabel, title, subtitle, children }: GraphSectionProps) {
   return (
     <View style={styles.sectionCard}>
@@ -102,13 +103,11 @@ export function AqiGraphScreen({
   const [yearlyPm25Loading, setYearlyPm25Loading] = useState(true);
   const [yearlyPm25DailyCurrentYear, setYearlyPm25DailyCurrentYear] = useState<Map<string, number>>(new Map());
   const [yearlyPm25DailyPriorYear, setYearlyPm25DailyPriorYear] = useState<Map<string, number>>(new Map());
-  const [visibleMonthKey, setVisibleMonthKey] = useState(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${`${now.getMonth() + 1}`.padStart(2, '0')}`;
-  });
+  const [visibleMonthKey, setVisibleMonthKey] = useState(() => monthKeyFromDate(new Date()));
   const [calendarMonthSummaries, setCalendarMonthSummaries] = useState<Map<string, DaySummary>>(new Map());
+  const [rollingHourChartWidth, onRollingHourChartLayout] = useChartWidth();
+  const [yearlyPm25ChartWidth, onYearlyPm25ChartLayout] = useChartWidth();
 
-  // Fetch the past 7 days of sensor readings for the rolling hourly chart.
   useEffect(() => {
     let cancelled = false;
     setHistoryLoading(true);
@@ -128,7 +127,6 @@ export function AqiGraphScreen({
     };
   }, []);
 
-  // Fetch daily PM2.5 rows for the yearly-by-month comparison chart.
   useEffect(() => {
     let cancelled = false;
     setYearlyPm25Loading(true);
@@ -136,12 +134,9 @@ export function AqiGraphScreen({
       const res = await fetchDailySensorAqiCalendarRows();
       if (cancelled) return;
       const rows = (res.data ?? []).map((row) => ({ pm25: row.pm25, time: row.time }));
-      const now = new Date();
-      const year = now.getFullYear();
-      const currentYearRows = filterDailyPm25RowsForYear(rows, year);
-      const priorYearRows = filterDailyPm25RowsForYear(rows, year - 1);
-      setYearlyPm25DailyCurrentYear(buildDailyPm25Map(currentYearRows));
-      setYearlyPm25DailyPriorYear(buildDailyPm25Map(priorYearRows));
+      const year = new Date().getFullYear();
+      setYearlyPm25DailyCurrentYear(buildDailyPm25Map(filterDailyPm25RowsForYear(rows, year)));
+      setYearlyPm25DailyPriorYear(buildDailyPm25Map(filterDailyPm25RowsForYear(rows, year - 1)));
       setYearlyPm25Loading(false);
     })();
     return () => {
@@ -149,8 +144,7 @@ export function AqiGraphScreen({
     };
   }, []);
 
-  // One series: every recorded timestamp averages PurpleAir + Clarity (7-day fetch + live poll).
-  const tenMinutePoints = useMemo(
+  const hourlyAqiPoints = useMemo(
     () =>
       buildAverageAqiTimeseries(
         [...historyPurpleAir, ...purpleAir],
@@ -160,14 +154,11 @@ export function AqiGraphScreen({
   );
 
   const rollingWeekHourly = useMemo(
-    () => computeRollingWeekHourlyAverages(tenMinutePoints),
-    [tenMinutePoints],
+    () => computeRollingWeekHourlyAverages(hourlyAqiPoints),
+    [hourlyAqiPoints],
   );
 
-  const rollingWeekHasData = useMemo(
-    () => rollingWeekHourly.some((slot) => slot.sampleCount > 0),
-    [rollingWeekHourly],
-  );
+  const rollingWeekHasData = rollingWeekHourly.some((slot) => slot.sampleCount > 0);
 
   const rollingWeekPeakAvg = useMemo(() => {
     const withData = rollingWeekHourly.filter((slot) => slot.sampleCount > 0);
@@ -175,32 +166,19 @@ export function AqiGraphScreen({
     return Math.max(...withData.map((slot) => slot.avgAqi));
   }, [rollingWeekHourly]);
 
-  const rollingWeekChartPeakAqi = useMemo(() => {
-    if (rollingWeekPeakAvg == null) return 1;
-    return Math.max(1, rollingWeekPeakAvg);
-  }, [rollingWeekPeakAvg]);
+  const rollingWeekChartPeakAqi = rollingWeekPeakAvg == null ? 1 : Math.max(1, rollingWeekPeakAvg);
 
-  const [rollingHourChartWidth, setRollingHourChartWidth] = useState(0);
-
-  const handleRollingHourChartLayout = useCallback((e: LayoutChangeEvent) => {
-    const w = e.nativeEvent.layout.width;
-    if (Number.isFinite(w) && w > 0) setRollingHourChartWidth(w);
-  }, []);
-
-  const rollingWeekPeakLineBottom = useMemo(() => {
-    if (rollingWeekPeakAvg == null) return null;
-    return rollingHourBarHeight(rollingWeekPeakAvg, rollingWeekChartPeakAqi);
-  }, [rollingWeekPeakAvg, rollingWeekChartPeakAqi]);
+  const rollingWeekPeakLineBottom =
+    rollingWeekPeakAvg == null
+      ? null
+      : scaleBarHeight(rollingWeekPeakAvg, rollingWeekChartPeakAqi);
 
   const monthDayKeys = useMemo(() => enumerateDaysInMonth(visibleMonthKey), [visibleMonthKey]);
   const monthCategoryCounts = useMemo(() => {
     const dailyByDay = dailyAqiMapFromDaySummaries(calendarMonthSummaries);
     return countDaysByCategory(dailyByDay, monthDayKeys);
   }, [calendarMonthSummaries, monthDayKeys]);
-  const monthCategoryTotal = useMemo(
-    () => (Object.values(monthCategoryCounts) as number[]).reduce((a, b) => a + b, 0),
-    [monthCategoryCounts],
-  );
+  const monthCategoryTotal = monthCategoryCounts.reduce((a, b) => a + b, 0);
 
   const handleVisibleMonthChange = useCallback((monthKey: string) => {
     setVisibleMonthKey(monthKey);
@@ -217,45 +195,24 @@ export function AqiGraphScreen({
     [yearlyPm25DailyCurrentYear, yearlyPm25DailyPriorYear],
   );
 
-  const yearlyPm25HasData = useMemo(
-    () => yearlyPm25Chart.bars.some((bar) => bar.avgPm25 != null),
-    [yearlyPm25Chart.bars],
-  );
+  const yearlyPm25HasData = yearlyPm25Chart.bars.some((bar) => bar.avgPm25 != null);
 
   const yearlyPm25ChartPeak = useMemo(() => {
     const values = yearlyPm25Chart.bars
       .map((bar) => bar.avgPm25)
       .filter((v): v is number => v != null && Number.isFinite(v));
-    if (values.length === 0) return 1;
-    return Math.max(1, ...values);
+    return values.length === 0 ? 1 : Math.max(1, ...values);
   }, [yearlyPm25Chart.bars]);
 
-  const [yearlyPm25ChartWidth, setYearlyPm25ChartWidth] = useState(0);
+  const yearlyPm25ShowPriorYearDivider =
+    yearlyPm25Chart.priorYearStartsAtIndex != null && new Date().getMonth() !== 11;
 
-  const handleYearlyPm25ChartLayout = useCallback((e: LayoutChangeEvent) => {
-    const w = e.nativeEvent.layout.width;
-    if (Number.isFinite(w) && w > 0) setYearlyPm25ChartWidth(w);
-  }, []);
-
-  const yearlyPm25ShowPriorYearDivider = useMemo(() => {
-    const startIndex = yearlyPm25Chart.priorYearStartsAtIndex;
-    if (startIndex == null) return false;
-    // December: every month has occurred this year; no prior-year proxy months.
-    return new Date().getMonth() !== 11;
-  }, [yearlyPm25Chart.priorYearStartsAtIndex]);
-
-  const yearlyPm25PriorYearDividerX = useMemo(() => {
-    const startIndex = yearlyPm25Chart.priorYearStartsAtIndex;
-    if (!yearlyPm25ShowPriorYearDivider || startIndex == null || yearlyPm25ChartWidth <= 0) {
-      return null;
-    }
-    return (startIndex / yearlyPm25Chart.bars.length) * yearlyPm25ChartWidth;
-  }, [
-    yearlyPm25Chart.bars.length,
-    yearlyPm25Chart.priorYearStartsAtIndex,
-    yearlyPm25ChartWidth,
-    yearlyPm25ShowPriorYearDivider,
-  ]);
+  const yearlyPm25PriorYearDividerX =
+    !yearlyPm25ShowPriorYearDivider ||
+    yearlyPm25Chart.priorYearStartsAtIndex == null ||
+    yearlyPm25ChartWidth <= 0
+      ? null
+      : (yearlyPm25Chart.priorYearStartsAtIndex / yearlyPm25Chart.bars.length) * yearlyPm25ChartWidth;
 
   const currentYear = new Date().getFullYear();
 
@@ -276,7 +233,6 @@ export function AqiGraphScreen({
           <Text style={styles.pageSubtitle}>{copy.pageSubtitle}</Text>
         </View>
 
-        {/* Section 1: rolling 7-day average AQI by hour of day (24 bars). */}
         <GraphSection
           sectionLabel={copy.rollingSectionLabel}
           title={copy.rollingSectionTitle}
@@ -290,34 +246,31 @@ export function AqiGraphScreen({
           ) : !rollingWeekHasData ? (
             <Text style={styles.emptyText}>{copy.noRollingAverages}</Text>
           ) : (
-            <View style={styles.rollingHourChart}>
-              <View style={styles.rollingHourBarsArea} onLayout={handleRollingHourChartLayout}>
+            <View style={styles.chart}>
+              <View style={styles.chartPlot} onLayout={onRollingHourChartLayout}>
                 {rollingWeekPeakLineBottom != null && rollingHourChartWidth > 0 ? (
                   <>
                     <Svg
                       width={rollingHourChartWidth}
-                      height={ROLLING_HOUR_CHART_HEIGHT}
-                      style={styles.rollingHourPeakLineSvg}
+                      height={CHART_HEIGHT}
+                      style={styles.chartOverlaySvg}
                       pointerEvents="none"
                     >
                       <Line
                         x1={0}
-                        y1={ROLLING_HOUR_CHART_HEIGHT - rollingWeekPeakLineBottom}
+                        y1={CHART_HEIGHT - rollingWeekPeakLineBottom}
                         x2={rollingHourChartWidth}
-                        y2={ROLLING_HOUR_CHART_HEIGHT - rollingWeekPeakLineBottom}
+                        y2={CHART_HEIGHT - rollingWeekPeakLineBottom}
                         stroke="#64748b"
                         strokeWidth={1.5}
                         strokeDasharray="4 4"
                       />
                     </Svg>
                     <View
-                      style={[
-                        styles.rollingHourPeakLabel,
-                        { bottom: rollingWeekPeakLineBottom - 8 },
-                      ]}
+                      style={[styles.chartOverlayLabel, styles.chartOverlayLabelRight, { bottom: rollingWeekPeakLineBottom - 8 }]}
                       pointerEvents="none"
                     >
-                      <Text style={styles.rollingHourPeakLabelText}>
+                      <Text style={styles.chartOverlayLabelText}>
                         {rollingWeekPeakAvg == null
                           ? copy.peakAvgShort
                           : copy.peakAvgWithValue(Math.round(rollingWeekPeakAvg))}
@@ -325,20 +278,21 @@ export function AqiGraphScreen({
                     </View>
                   </>
                 ) : null}
-                <View style={styles.rollingHourBarsRow}>
+                <View style={[styles.barsRow, { height: CHART_HEIGHT, gap: 1 }]}>
                   {rollingWeekHourly.map((slot) => {
                     const hasData = slot.sampleCount > 0;
-                    const barHeight = hasData
-                      ? rollingHourBarHeight(slot.avgAqi, rollingWeekChartPeakAqi)
-                      : 4;
-                    const barColor = hasData ? aqiCategory(slot.avgAqi).bg : '#e2e8f0';
                     return (
-                      <View key={slot.hour} style={styles.rollingHourBarWrap}>
+                      <View key={slot.hour} style={styles.barWrap}>
                         <View
                           style={[
                             styles.rollingHourBar,
-                            { height: barHeight, backgroundColor: barColor },
-                            !hasData && styles.rollingHourBarEmpty,
+                            {
+                              height: hasData
+                                ? scaleBarHeight(slot.avgAqi, rollingWeekChartPeakAqi)
+                                : 4,
+                              backgroundColor: hasData ? aqiCategory(slot.avgAqi).bg : '#e2e8f0',
+                            },
+                            !hasData && styles.barEmpty,
                           ]}
                         />
                       </View>
@@ -346,30 +300,26 @@ export function AqiGraphScreen({
                   })}
                 </View>
               </View>
-              <View style={styles.rollingHourLabelsRow}>
-                {rollingWeekHourly.map((slot) => {
-                  const showLabel = ROLLING_HOUR_LABEL_HOURS.includes(slot.hour);
-                  return (
-                    <View key={slot.hour} style={styles.rollingHourLabelWrap}>
-                      {showLabel ? (
-                        <Text
-                          style={styles.rollingHourLabel}
-                          numberOfLines={1}
-                          adjustsFontSizeToFit
-                          minimumFontScale={0.65}
-                        >
-                          {formatRollingHourLabel(slot.hour)}
-                        </Text>
-                      ) : null}
-                    </View>
-                  );
-                })}
+              <View style={[styles.labelsRow, { gap: 1 }]}>
+                {rollingWeekHourly.map((slot) => (
+                  <View key={slot.hour} style={styles.rollingHourLabelWrap}>
+                    {ROLLING_HOUR_LABEL_HOURS.includes(slot.hour) ? (
+                      <Text
+                        style={styles.rollingHourLabel}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.65}
+                      >
+                        {formatRollingHourLabel(slot.hour)}
+                      </Text>
+                    ) : null}
+                  </View>
+                ))}
               </View>
             </View>
           )}
         </GraphSection>
 
-        {/* Section 2: AQI-colored calendar + good/moderate/USG/unhealthy day counts. */}
         <GraphSection
           sectionLabel={copy.calendarSectionLabel}
           title={copy.calendarSectionTitle}
@@ -389,16 +339,15 @@ export function AqiGraphScreen({
               <Text style={styles.emptyText}>{copy.noDailyAveragesMonth}</Text>
             ) : (
               <View style={styles.categoryLegend}>
-                {(['good', 'moderate', 'usg', 'unhealthy'] as DayAqiCategory[]).map((key) => {
-                  const count = monthCategoryCounts[key];
+                {AQI_CATEGORY_BANDS.map((band, index) => {
+                  const count = monthCategoryCounts[index] ?? 0;
                   if (count === 0) return null;
-                  const meta = DAY_AQI_CATEGORY_META[key];
                   const dayWord = count === 1 ? copy.daySingular : copy.daysPlural;
                   return (
-                    <View key={key} style={styles.categoryLegendRow}>
-                      <View style={[styles.categorySwatch, { backgroundColor: meta.bg }]} />
+                    <View key={band.label} style={styles.categoryLegendRow}>
+                      <View style={[styles.categorySwatch, { backgroundColor: band.bg }]} />
                       <Text style={styles.categoryLegendLabel}>
-                        {copy.categoryLabels[key]}: {count} {dayWord}
+                        {copy.categoryLabels[index] ?? band.label}: {count} {dayWord}
                       </Text>
                     </View>
                   );
@@ -408,7 +357,6 @@ export function AqiGraphScreen({
           </View>
         </GraphSection>
 
-        {/* Section 3: monthly PM2.5 bars; dashed divider marks prior-year proxy months. */}
         <GraphSection
           sectionLabel={copy.yearlySectionLabel}
           title={copy.yearlySectionTitle}
@@ -422,52 +370,50 @@ export function AqiGraphScreen({
           ) : !yearlyPm25HasData ? (
             <Text style={styles.emptyText}>{copy.noDailyPm25}</Text>
           ) : (
-            <View style={styles.yearlyPm25Chart}>
-              <View style={styles.yearlyPm25BarsArea} onLayout={handleYearlyPm25ChartLayout}>
-                {yearlyPm25PriorYearDividerX != null && yearlyPm25ChartWidth > 0 ? (
+            <View style={styles.chart}>
+              <View style={styles.chartPlot} onLayout={onYearlyPm25ChartLayout}>
+                {yearlyPm25PriorYearDividerX != null ? (
                   <>
                     <Svg
                       width={yearlyPm25ChartWidth}
-                      height={YEARLY_PM25_CHART_HEIGHT}
-                      style={styles.yearlyPm25DividerSvg}
+                      height={CHART_HEIGHT}
+                      style={styles.chartOverlaySvg}
                       pointerEvents="none"
                     >
                       <Line
                         x1={yearlyPm25PriorYearDividerX}
                         y1={0}
                         x2={yearlyPm25PriorYearDividerX}
-                        y2={YEARLY_PM25_CHART_HEIGHT}
+                        y2={CHART_HEIGHT}
                         stroke="#64748b"
                         strokeWidth={1.5}
                         strokeDasharray="4 4"
                       />
                     </Svg>
                     <View
-                      style={[
-                        styles.yearlyPm25PriorYearLabel,
-                        { left: yearlyPm25PriorYearDividerX + 4 },
-                      ]}
+                      style={[styles.chartOverlayLabel, styles.chartOverlayLabelLeft, { left: yearlyPm25PriorYearDividerX + 4 }]}
                       pointerEvents="none"
                     >
-                      <Text style={styles.yearlyPm25PriorYearLabelText}>{copy.previousYear}</Text>
+                      <Text style={styles.chartOverlayLabelText}>{copy.previousYear}</Text>
                     </View>
                   </>
                 ) : null}
-                <View style={styles.yearlyPm25BarsRow}>
+                <View style={[styles.barsRow, { height: CHART_HEIGHT, gap: 2 }]}>
                   {yearlyPm25Chart.bars.map((bar) => {
                     const hasData = bar.avgPm25 != null;
-                    const barHeight = hasData
-                      ? yearlyPm25BarHeight(bar.avgPm25 as number, yearlyPm25ChartPeak)
-                      : 4;
                     const aqi = hasData ? pm25ToAqi(bar.avgPm25) : null;
-                    const barColor = hasData && aqi != null ? aqiCategory(aqi).bg : '#e2e8f0';
                     return (
-                      <View key={bar.label} style={styles.yearlyPm25BarWrap}>
+                      <View key={bar.label} style={styles.barWrap}>
                         <View
                           style={[
                             styles.yearlyPm25Bar,
-                            { height: barHeight, backgroundColor: barColor },
-                            !hasData && styles.yearlyPm25BarEmpty,
+                            {
+                              height: hasData
+                                ? scaleBarHeight(bar.avgPm25 as number, yearlyPm25ChartPeak)
+                                : 4,
+                              backgroundColor: hasData && aqi != null ? aqiCategory(aqi).bg : '#e2e8f0',
+                            },
+                            !hasData && styles.barEmpty,
                             bar.source === 'prior-year' && styles.yearlyPm25BarPriorYear,
                           ]}
                         />
@@ -476,9 +422,9 @@ export function AqiGraphScreen({
                   })}
                 </View>
               </View>
-              <View style={styles.yearlyPm25LabelsRow}>
+              <View style={[styles.labelsRow, { gap: 2 }]}>
                 {yearlyPm25Chart.bars.map((bar) => (
-                  <View key={bar.label} style={styles.yearlyPm25LabelWrap}>
+                  <View key={bar.label} style={styles.labelWrap}>
                     <Text style={styles.yearlyPm25Label} numberOfLines={1}>
                       {copy.monthLabels[bar.monthIndex] ?? bar.label}
                     </Text>
@@ -617,59 +563,63 @@ const styles = StyleSheet.create({
     color: educationTheme.bodyColor,
     fontWeight: '600',
   },
-  rollingHourChart: {
+  chart: {
     marginTop: 4,
     gap: 4,
   },
-  rollingHourBarsArea: {
+  chartPlot: {
     position: 'relative',
-    height: ROLLING_HOUR_CHART_HEIGHT,
+    height: CHART_HEIGHT,
   },
-  rollingHourPeakLineSvg: {
+  chartOverlaySvg: {
     position: 'absolute',
     left: 0,
     top: 0,
     zIndex: 1,
   },
-  rollingHourPeakLabel: {
+  chartOverlayLabel: {
     position: 'absolute',
-    right: 0,
     zIndex: 2,
     paddingHorizontal: 4,
     paddingVertical: 1,
     borderRadius: 4,
     backgroundColor: 'rgba(255,255,255,0.92)',
   },
-  rollingHourPeakLabelText: {
+  chartOverlayLabelRight: {
+    right: 0,
+  },
+  chartOverlayLabelLeft: {
+    top: 2,
+    maxWidth: 88,
+  },
+  chartOverlayLabelText: {
     fontSize: 9,
     fontWeight: '700',
     color: educationTheme.mutedColor,
   },
-  rollingHourBarsRow: {
+  barsRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
-    height: ROLLING_HOUR_CHART_HEIGHT,
-    gap: 1,
   },
-  rollingHourLabelsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 1,
-  },
-  rollingHourBarWrap: {
+  barWrap: {
     flex: 1,
     minWidth: 0,
     alignItems: 'center',
     justifyContent: 'flex-end',
     height: '100%',
   },
-  rollingHourLabelWrap: {
+  barEmpty: {
+    opacity: 0.55,
+  },
+  labelsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  labelWrap: {
     flex: 1,
     minWidth: 0,
     alignItems: 'center',
-    height: 12,
-    overflow: 'hidden',
   },
   rollingHourBar: {
     width: '88%',
@@ -677,8 +627,12 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     minHeight: 4,
   },
-  rollingHourBarEmpty: {
-    opacity: 0.55,
+  rollingHourLabelWrap: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    height: 12,
+    overflow: 'hidden',
   },
   rollingHourLabel: {
     fontSize: 7,
@@ -688,67 +642,11 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     width: '100%',
   },
-  yearlyPm25Chart: {
-    marginTop: 4,
-    gap: 4,
-  },
-  yearlyPm25BarsArea: {
-    position: 'relative',
-    height: YEARLY_PM25_CHART_HEIGHT,
-  },
-  yearlyPm25DividerSvg: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    zIndex: 1,
-  },
-  yearlyPm25PriorYearLabel: {
-    position: 'absolute',
-    top: 2,
-    zIndex: 2,
-    maxWidth: 88,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 4,
-    backgroundColor: 'rgba(255,255,255,0.92)',
-  },
-  yearlyPm25PriorYearLabelText: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: educationTheme.mutedColor,
-  },
-  yearlyPm25BarsRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    height: YEARLY_PM25_CHART_HEIGHT,
-    gap: 2,
-  },
-  yearlyPm25LabelsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 2,
-  },
-  yearlyPm25BarWrap: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    height: '100%',
-  },
-  yearlyPm25LabelWrap: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'center',
-  },
   yearlyPm25Bar: {
     width: '80%',
     maxWidth: 22,
     borderRadius: 4,
     minHeight: 4,
-  },
-  yearlyPm25BarEmpty: {
-    opacity: 0.55,
   },
   yearlyPm25BarPriorYear: {
     borderWidth: 1,

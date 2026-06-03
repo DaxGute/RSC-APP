@@ -2,12 +2,12 @@
  * Interactive AQI slider for the Education tab health section.
  *
  * User scrubs 0–500 on an EPA gradient track; shows category badge, PM2.5 equivalent,
- * literature-backed mortality/ER estimates (from lib/aqiHealthStats), and fixed mask/filter
- * efficacy with tappable citation links. Assumptions block is collapsible.
+ * literature-backed mortality/ER estimates, and fixed mask/filter efficacy with tappable
+ * citation links. Assumptions block is collapsible.
  */
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Linking,
   PanResponder,
@@ -20,41 +20,31 @@ import {
   type ViewStyle,
 } from 'react-native';
 
+import { useAppLanguage } from '../../contexts/LanguageProvider';
+import { EPA_AQI_HEATMAP_GRADIENT, EPA_AQI_INDEX_MAX, aqiCategory, aqiToPm25 } from '../../lib/shell/airQualityBreakpoints';
 import {
-  AQI_HEALTH_PAPER_URL,
-  BMJ_PM25_HOSPITAL_ER_URL,
+  EDUCATION_HEALTH_CITATION_URLS,
+  EDUCATION_HEALTH_EXPLORER_DEFAULT_AQI,
   INDOOR_FILTER_CI_HI_PCT,
   INDOOR_FILTER_CI_LO_PCT,
   INDOOR_FILTER_EFFICACY_PCT,
-  INDOOR_FILTER_PAPER_URL,
   OUTDOOR_MASK_CI_HI_PCT,
   OUTDOOR_MASK_CI_LO_PCT,
   OUTDOOR_MASK_EFFICACY_PCT,
-  OUTDOOR_MASK_PAPER_URL,
+  educationAqiCategoryLabel,
+  educationTheme,
   erVisitRateFromPm25,
-  formatCiPct,
-  formatSmallPct,
+  formatHealthImpactCiPct,
+  formatHealthImpactPct,
   mortalityPercentFromInterpolatedPm25,
-} from '../../lib/aqiHealthStats';
-import { EPA_AQI_HEATMAP_GRADIENT, EPA_AQI_INDEX_MAX, aqiCategory, aqiToPm25 } from '../../lib/aqiUtils';
-import type { EducationHealthExplorerCopy } from '../../lib/educationContent';
-import { educationTheme } from '../../lib/educationTheme';
+  type EducationHealthExplorerCopy,
+} from '../../lib/education/educationContent';
 
 const THUMB_SIZE = 26;
 const TRACK_HEIGHT = 10;
 /** Touch target taller than the gradient; thumb stays centered on the 10px bar. */
 const TRACK_HIT_HEIGHT = Math.max(THUMB_SIZE, TRACK_HEIGHT + 16) * 2;
-/** Initial slider position (moderate AQI) when the section first mounts. */
-const DEFAULT_AQI = 72;
-const CITATION_ACCENT = '#2563eb';
-
-/** Maps [n] markers in the UI to study URLs opened via Linking. */
-const CITATION_URLS: Record<number, string> = {
-  1: AQI_HEALTH_PAPER_URL,
-  2: BMJ_PM25_HOSPITAL_ER_URL,
-  3: OUTDOOR_MASK_PAPER_URL,
-  4: INDOOR_FILTER_PAPER_URL,
-};
+const PROTECTION_COLUMN_SHRINK_PX = 5;
 
 function clamp(n: number, lo: number, hi: number) {
   return Math.min(hi, Math.max(lo, n));
@@ -62,21 +52,17 @@ function clamp(n: number, lo: number, hi: number) {
 
 type AqiHealthExplorerProps = {
   copy: EducationHealthExplorerCopy;
-  /** Called when the user begins scrubbing; use to lock parent scroll. */
-  onScrubBegin?: () => void;
-  /** Called when the user releases or the scrub is interrupted. */
-  onScrubEnd?: () => void;
+  /** Parent scroll lock while the user scrubs the AQI track. */
+  onScrubbingChange?: (scrubbing: boolean) => void;
 };
 
 type ImpactRowProps = {
   title: string;
-  context?: string;
   citationId: number;
   onCitationPress: (id: number) => void;
-  children: ReactNode;
+  children: React.ReactNode;
 };
 
-/** Tappable [n] superscript that opens the matching study URL. */
 function CitationMarker({ id, onPress }: { id: number; onPress: (id: number) => void }) {
   return (
     <Pressable
@@ -91,16 +77,13 @@ function CitationMarker({ id, onPress }: { id: number; onPress: (id: number) => 
   );
 }
 
-/** Slight flexBasis tweak so health vs protection columns balance on narrow screens. */
-const PROTECTION_COLUMN_SHRINK_PX = 5;
-
 function ImpactColumn({
   heading,
   children,
   style,
 }: {
   heading: string;
-  children: ReactNode;
+  children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
 }) {
   return (
@@ -113,7 +96,7 @@ function ImpactColumn({
   );
 }
 
-function ImpactRow({ title, context, citationId, onCitationPress, children }: ImpactRowProps) {
+function ImpactRow({ title, citationId, onCitationPress, children }: ImpactRowProps) {
   return (
     <View style={styles.impactRow}>
       <View style={styles.impactRowMain}>
@@ -123,23 +106,37 @@ function ImpactRow({ title, context, citationId, onCitationPress, children }: Im
           </Text>
           <CitationMarker id={citationId} onPress={onCitationPress} />
         </View>
-        {context ? <Text style={styles.rowContext}>{context}</Text> : null}
         <View style={styles.impactValues}>{children}</View>
       </View>
     </View>
   );
 }
 
-export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthExplorerProps) {
-  const [aqi, setAqi] = useState(DEFAULT_AQI);
+function ImpactEstimate({
+  children,
+  color,
+  muted,
+}: {
+  children: React.ReactNode;
+  color: string;
+  muted?: boolean;
+}) {
+  return (
+    <Text style={[styles.primaryEstimate, { color }, muted && styles.primaryEstimateMuted]}>{children}</Text>
+  );
+}
+
+export function AqiHealthExplorer({ copy, onScrubbingChange }: AqiHealthExplorerProps) {
+  const { language } = useAppLanguage();
+  const [aqi, setAqi] = useState(EDUCATION_HEALTH_EXPLORER_DEFAULT_AQI);
   const [assumptionsExpanded, setAssumptionsExpanded] = useState(false);
   const [trackWidth, setTrackWidth] = useState(0);
   const trackWidthRef = useRef(0);
-  /** Track left edge in screen coords; derived on grant so moves work off the hit area. */
   const trackPageXRef = useRef(0);
   const scrubbingRef = useRef(false);
 
   const category = useMemo(() => aqiCategory(aqi), [aqi]);
+  const categoryLabel = useMemo(() => educationAqiCategoryLabel(aqi, language), [aqi, language]);
   const pm25 = useMemo(() => aqiToPm25(aqi), [aqi]);
   const mort = useMemo(() => mortalityPercentFromInterpolatedPm25(pm25), [pm25]);
   const erErr = useMemo(() => erVisitRateFromPm25(pm25), [pm25]);
@@ -147,7 +144,6 @@ export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthE
   const thumbLeft =
     trackWidth > 0 ? clamp((aqi / EPA_AQI_INDEX_MAX) * trackWidth - THUMB_SIZE / 2, 0, trackWidth - THUMB_SIZE) : 0;
 
-  /** Map screen x to an integer AQI (pageX keeps scrubbing accurate off the track). */
   const setAqiFromPageX = useCallback((pageX: number) => {
     const w = trackWidthRef.current;
     if (w <= 0) return;
@@ -159,10 +155,9 @@ export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthE
   const endScrub = useCallback(() => {
     if (!scrubbingRef.current) return;
     scrubbingRef.current = false;
-    onScrubEnd?.();
-  }, [onScrubEnd]);
+    onScrubbingChange?.(false);
+  }, [onScrubbingChange]);
 
-  // Drag anywhere on the track hit area; keep responder while finger is down even off-track.
   const panResponder = useMemo(
     () =>
       PanResponder.create({
@@ -173,14 +168,14 @@ export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthE
         onPanResponderGrant: (e) => {
           trackPageXRef.current = e.nativeEvent.pageX - e.nativeEvent.locationX;
           scrubbingRef.current = true;
-          onScrubBegin?.();
+          onScrubbingChange?.(true);
           setAqiFromPageX(e.nativeEvent.pageX);
         },
         onPanResponderMove: (e) => setAqiFromPageX(e.nativeEvent.pageX),
         onPanResponderRelease: endScrub,
         onPanResponderTerminate: endScrub,
       }),
-    [endScrub, onScrubBegin, setAqiFromPageX],
+    [endScrub, onScrubbingChange, setAqiFromPageX],
   );
 
   const onTrackLayout = useCallback((e: LayoutChangeEvent) => {
@@ -192,7 +187,7 @@ export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthE
   }, []);
 
   const onCitationPress = useCallback((id: number) => {
-    const url = CITATION_URLS[id];
+    const url = EDUCATION_HEALTH_CITATION_URLS[id];
     if (!url) return;
     void Linking.openURL(url).catch(() => {
       /* ignore */
@@ -201,6 +196,7 @@ export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthE
 
   const pm25Label =
     pm25 != null ? copy.pm25Equivalent.replace('{value}', pm25.toFixed(1)) : copy.pm25Unknown;
+  const healthColor = educationTheme.healthImpactColor;
 
   return (
     <View style={styles.root}>
@@ -210,7 +206,7 @@ export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthE
           <Text style={styles.heroAqiUnit}>AQI</Text>
           <View style={[styles.categoryBadge, { backgroundColor: category.bg }]}>
             <Text style={[styles.categoryBadgeText, { color: category.fg }]} numberOfLines={2}>
-              {category.label}
+              {categoryLabel}
             </Text>
           </View>
         </View>
@@ -250,24 +246,28 @@ export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthE
           <ImpactRow title={copy.mortalityTitle} citationId={1} onCitationPress={onCitationPress}>
             {mort ? (
               <>
-                <Text style={styles.primaryEstimateHealth}>{formatSmallPct(mort.pct)}</Text>
+                <ImpactEstimate color={healthColor}>{formatHealthImpactPct(mort.pct)}</ImpactEstimate>
                 <Text style={styles.confidenceInterval}>
-                  {formatCiPct(mort.pct - mort.uncPct, mort.pct + mort.uncPct)}
+                  {formatHealthImpactCiPct(mort.pct - mort.uncPct, mort.pct + mort.uncPct)}
                 </Text>
               </>
             ) : (
-              <Text style={styles.emDashHealth}>—</Text>
+              <ImpactEstimate color={healthColor} muted>
+                —
+              </ImpactEstimate>
             )}
           </ImpactRow>
           <View style={styles.softDivider} />
           <ImpactRow title={copy.erTitle} citationId={2} onCitationPress={onCitationPress}>
             {erErr ? (
               <>
-                <Text style={styles.primaryEstimateHealth}>{formatSmallPct(erErr.mid)}</Text>
-                <Text style={styles.confidenceInterval}>{formatCiPct(erErr.lo, erErr.hi)}</Text>
+                <ImpactEstimate color={healthColor}>{formatHealthImpactPct(erErr.mid)}</ImpactEstimate>
+                <Text style={styles.confidenceInterval}>{formatHealthImpactCiPct(erErr.lo, erErr.hi)}</Text>
               </>
             ) : (
-              <Text style={styles.emDashHealth}>—</Text>
+              <ImpactEstimate color={healthColor} muted>
+                —
+              </ImpactEstimate>
             )}
           </ImpactRow>
         </ImpactColumn>
@@ -276,16 +276,16 @@ export function AqiHealthExplorer({ copy, onScrubBegin, onScrubEnd }: AqiHealthE
 
         <ImpactColumn heading={copy.protectionEfficacyHeading} style={styles.protectionImpactColumn}>
           <ImpactRow title={copy.outdoorMaskLabel} citationId={3} onCitationPress={onCitationPress}>
-            <Text style={styles.primaryEstimateProtection}>{`${OUTDOOR_MASK_EFFICACY_PCT}%`}</Text>
+            <ImpactEstimate color={educationTheme.protectionImpactColor}>{`${OUTDOOR_MASK_EFFICACY_PCT}%`}</ImpactEstimate>
             <Text style={styles.confidenceInterval}>
-              {formatCiPct(OUTDOOR_MASK_CI_LO_PCT, OUTDOOR_MASK_CI_HI_PCT)}
+              {formatHealthImpactCiPct(OUTDOOR_MASK_CI_LO_PCT, OUTDOOR_MASK_CI_HI_PCT)}
             </Text>
           </ImpactRow>
           <View style={styles.softDivider} />
           <ImpactRow title={copy.indoorFilterLabel} citationId={4} onCitationPress={onCitationPress}>
-            <Text style={styles.primaryEstimateProtection}>{`${INDOOR_FILTER_EFFICACY_PCT}%`}</Text>
+            <ImpactEstimate color={educationTheme.protectionImpactColor}>{`${INDOOR_FILTER_EFFICACY_PCT}%`}</ImpactEstimate>
             <Text style={styles.confidenceInterval}>
-              {formatCiPct(INDOOR_FILTER_CI_LO_PCT, INDOOR_FILTER_CI_HI_PCT)}
+              {formatHealthImpactCiPct(INDOOR_FILTER_CI_LO_PCT, INDOOR_FILTER_CI_HI_PCT)}
             </Text>
           </ImpactRow>
         </ImpactColumn>
@@ -445,7 +445,7 @@ const styles = StyleSheet.create({
   citationMarker: {
     fontSize: 10.5,
     fontWeight: '700',
-    color: CITATION_ACCENT,
+    color: educationTheme.citationAccentColor,
     backgroundColor: 'rgba(37, 99, 235, 0.08)',
     paddingHorizontal: 5,
     paddingVertical: 1,
@@ -453,38 +453,23 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     lineHeight: 14,
   },
-  rowContext: {
-    fontSize: 11,
-    lineHeight: 14,
-    color: educationTheme.bodyColor,
-  },
   impactValues: {
     marginTop: 4,
     gap: 1,
   },
-  primaryEstimateHealth: {
+  primaryEstimate: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#dc2626',
     letterSpacing: -0.2,
   },
-  primaryEstimateProtection: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#15803d',
-    letterSpacing: -0.2,
+  primaryEstimateMuted: {
+    opacity: 0.45,
   },
   confidenceInterval: {
     fontSize: 9.5,
     fontWeight: '500',
     lineHeight: 12,
-    color: '#94a3b8',
-  },
-  emDashHealth: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#dc2626',
-    opacity: 0.45,
+    color: educationTheme.subduedCaptionColor,
   },
   softDivider: {
     height: StyleSheet.hairlineWidth,
@@ -517,6 +502,6 @@ const styles = StyleSheet.create({
   assumptionsBody: {
     fontSize: 11,
     lineHeight: 16,
-    color: '#94a3b8',
+    color: educationTheme.subduedCaptionColor,
   },
 });

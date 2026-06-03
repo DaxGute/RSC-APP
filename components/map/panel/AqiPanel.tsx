@@ -16,8 +16,8 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
-import type { CurrentKrigingRow } from '../../../lib/database.types';
-import { coordinateInRegion, type MapRegion } from '../../../lib/mapRegionFromData';
+import type { CurrentKrigingRow } from '../../../lib/shell/supabase';
+import { coordinateInRegion, type MapRegion } from '../../../lib/map/mapRegionFromData';
 import {
   EPA_AQI_CATEGORY_BANDS,
   aqiCategory,
@@ -25,45 +25,80 @@ import {
   pm25ToAqi,
   type AqiCategory,
   type Pm25Category,
-} from '../../../lib/aqiUtils';
-import { milesBetweenKm } from '../../../lib/geoUtils';
-import { computeSsfSelection } from '../../../lib/ssfSelection';
-import type { SensorPoint } from '../../../lib/sensorTypes';
-import type { FetchError } from '../../../lib/fetchAirQuality';
-import type { Metric } from '../../../lib/metric';
-import type { AppLanguage } from '../../../lib/appLanguage';
-import type { MapScreenCopy } from '../../../lib/mapScreenCopy';
-import { localizedAqiCategoryLabel, mapScreenCopy } from '../../../lib/mapScreenCopy';
+} from '../../../lib/shell/airQualityBreakpoints';
+import { milesBetweenKm, haversineKm } from '../../../lib/shell/geoUtils';
+import { rowsToPm25Grid2D, samplePm25AtLonLat } from '../../../lib/map/projection/modeling/gridMath';
+import { resolveHeatmapGridRows } from '../../../lib/map/recomputeKriging';
+import type { SensorPoint } from '../../../lib/map/sensorTypes';
+import type { FetchError } from '../../../lib/shell/fetchAirQuality';
+import type { AppLanguage } from '../../../contexts/appLanguage';
+import type { MapScreenContent } from '../../../lib/map/mapScreenContent';
+import { localizedAqiCategoryLabel, mapScreenContent } from '../../../lib/map/mapScreenContent';
 import { useAppLanguage } from '../../../contexts/LanguageProvider';
-import { MetricFade, MetricToggle } from './MetricToggle';
+import { MetricFade, MetricToggle, type Metric } from './MetricToggle';
 
-export type { Metric } from '../../../lib/metric';
+/**
+ * Map tap estimate: sample PM2.5 from the same grid as KrigingHeatmapLayer heatmap.
+ * Also returns closest sensor for mini-cards when the tap was not on a sensor feature.
+ */
+export function computeSsfSelection(
+  lat0: number,
+  lon0: number,
+  sensors: SensorPoint[],
+  kriging: CurrentKrigingRow[],
+): {
+  predPm25: number | null;
+  predPm25Category: Pm25Category;
+  closest: { lat: number; lon: number; pm25: number; distKm: number } | null;
+} {
+  let closest: { lat: number; lon: number; pm25: number; distKm: number } | null = null;
+  if (sensors.length > 0) {
+    let bestI = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < sensors.length; i++) {
+      const d = haversineKm(lat0, lon0, sensors[i].latitude, sensors[i].longitude);
+      if (d < bestD) {
+        bestD = d;
+        bestI = i;
+      }
+    }
+    const s = sensors[bestI];
+    closest = { lat: s.latitude, lon: s.longitude, pm25: s.pm25, distKm: bestD };
+  }
+
+  const sharedRows = resolveHeatmapGridRows({ kriging, sensors });
+  const sharedGrid = rowsToPm25Grid2D(sharedRows);
+  const predPm25: number | null = sharedGrid ? samplePm25AtLonLat(lat0, lon0, sharedGrid) : null;
+  const predPm25Category = pm25BreakpointCategory(predPm25);
+
+  return { predPm25, predPm25Category, closest };
+}
 
 /** Sheet-mode title derived from panel state (placeholder, OOB, loading, sensor vs estimate). */
 function sheetPanelTitle(
   panel: { kind: string; isSensorReading?: boolean },
-  copy: MapScreenCopy,
+  content: MapScreenContent,
 ): string {
   switch (panel.kind) {
     case 'oob':
-      return copy.panelOutOfBounds;
+      return content.panelOutOfBounds;
     case 'msg':
-      return copy.panelAirQuality;
+      return content.panelAirQuality;
     case 'placeholder':
-      return copy.panelClickMap;
+      return content.panelClickMap;
     case 'ok':
-      return panel.isSensorReading ? copy.panelSensorReading : copy.panelAirQualityEstimate;
+      return panel.isSensorReading ? content.panelSensorReading : content.panelAirQualityEstimate;
     default:
-      return copy.panelAirQualityEstimate;
+      return content.panelAirQualityEstimate;
   }
 }
 
 /** Hero label: observed vs predicted, keyed off active metric. */
-function metricHeroLabel(metric: Metric, isSensorReading: boolean, copy: MapScreenCopy): string {
+function metricHeroLabel(metric: Metric, isSensorReading: boolean, content: MapScreenContent): string {
   if (isSensorReading) {
-    return metric === 'aqi' ? copy.panelObservedAqi : copy.panelObservedPm25;
+    return metric === 'aqi' ? content.panelObservedAqi : content.panelObservedPm25;
   }
-  return metric === 'aqi' ? copy.panelPredictedAqi : copy.panelPredictedPm25;
+  return metric === 'aqi' ? content.panelPredictedAqi : content.panelPredictedPm25;
 }
 
 /** Preset cooldowns for the reminder modal (minutes). Default selection is 60. Labels are short so the row fits on one line. */
@@ -168,7 +203,7 @@ export function AqiPanel({
   onPanelTouchStart,
 }: AqiPanelProps) {
   const { language } = useAppLanguage();
-  const copy = mapScreenCopy[language];
+  const content = mapScreenContent[language];
   const { width: winW } = useWindowDimensions();
   const isNarrow = winW <= 640;
   const [metric, setMetric] = useState<Metric>('pm25');
@@ -212,13 +247,13 @@ export function AqiPanel({
       return { kind: 'oob' as const, lat, lon };
     }
     if (error) {
-      return { kind: 'msg' as const, msg: copy.panelLoadDataError(error.message) };
+      return { kind: 'msg' as const, msg: content.panelLoadDataError(error.message) };
     }
     if (loading && sensors.length === 0 && kriging.length === 0) {
-      return { kind: 'msg' as const, msg: copy.panelLoadingData };
+      return { kind: 'msg' as const, msg: content.panelLoadingData };
     }
     if (!loading && sensors.length === 0 && kriging.length === 0) {
-      return { kind: 'msg' as const, msg: copy.panelNoSensorData };
+      return { kind: 'msg' as const, msg: content.panelNoSensorData };
     }
 
     const isSensorReading = selectedSensor != null;
@@ -250,7 +285,7 @@ export function AqiPanel({
       isSensorReading,
       closest: isSensorReading ? null : base.closest,
     };
-  }, [copy, selected, loading, error, sensors, kriging, mapRegion, selectedSensor]);
+  }, [content, selected, loading, error, sensors, kriging, mapRegion, selectedSensor]);
 
   const showReminderButton = Boolean(onReminderPickThreshold && panel.kind === 'ok');
 
@@ -292,7 +327,7 @@ export function AqiPanel({
           <>
             <View style={styles.sheetTitleRow}>
               <Text style={styles.sheetTitle} numberOfLines={1}>
-                {sheetPanelTitle(panel, copy)}
+                {sheetPanelTitle(panel, content)}
               </Text>
               <View style={styles.sheetTitleActions}>
                 {showReminderButton ? (
@@ -301,7 +336,7 @@ export function AqiPanel({
                     hitSlop={12}
                     style={styles.chromeIconBtnSheet}
                     accessibilityRole="button"
-                    accessibilityLabel={copy.panelAirQualityReminderA11y}
+                    accessibilityLabel={content.panelAirQualityReminderA11y}
                   >
                     <FontAwesome
                       name={reminderBellActive ? 'bell' : 'bell-o'}
@@ -316,7 +351,7 @@ export function AqiPanel({
                     hitSlop={12}
                     style={styles.chromeIconBtnSheet}
                     accessibilityRole="button"
-                    accessibilityLabel={copy.panelCloseA11y}
+                    accessibilityLabel={content.panelCloseA11y}
                   >
                     <Text style={styles.closeBtnText}>✕</Text>
                   </Pressable>
@@ -332,7 +367,7 @@ export function AqiPanel({
                 heroAccent={heroAccent}
                 heroValueSize={heroValueSize}
                 cardValueSize={cardValueSize}
-                copy={copy}
+                content={content}
                 language={language}
               />
             </View>
@@ -348,7 +383,7 @@ export function AqiPanel({
                       hitSlop={12}
                       style={styles.chromeIconBtn}
                       accessibilityRole="button"
-                      accessibilityLabel={copy.panelAirQualityReminderA11y}
+                      accessibilityLabel={content.panelAirQualityReminderA11y}
                     >
                       <FontAwesome
                         name={reminderBellActive ? 'bell' : 'bell-o'}
@@ -362,7 +397,7 @@ export function AqiPanel({
                     hitSlop={12}
                     style={styles.chromeIconBtn}
                     accessibilityRole="button"
-                    accessibilityLabel={copy.panelCloseA11y}
+                    accessibilityLabel={content.panelCloseA11y}
                   >
                     <Text style={styles.closeBtnText}>✕</Text>
                   </Pressable>
@@ -376,8 +411,8 @@ export function AqiPanel({
             >
           {panel.kind === 'oob' ? (
             <View style={[styles.empty, styles.emptyMinH]}>
-              <Text style={styles.emptyTitle}>{copy.panelOutOfBounds}</Text>
-              <Text style={styles.emptyBody}>{copy.panelOobBody}</Text>
+              <Text style={styles.emptyTitle}>{content.panelOutOfBounds}</Text>
+              <Text style={styles.emptyBody}>{content.panelOobBody}</Text>
               <Text style={styles.emptyCoords}>
                 {panel.lat.toFixed(5)}, {panel.lon.toFixed(5)}
               </Text>
@@ -392,7 +427,7 @@ export function AqiPanel({
             <>
               <View style={styles.modernTop}>
                 <View>
-                  <Text style={styles.eyebrow}>{copy.panelClickMap}</Text>
+                  <Text style={styles.eyebrow}>{content.panelClickMap}</Text>
                   <Text style={styles.coords}>-, -.</Text>
                 </View>
               </View>
@@ -405,14 +440,14 @@ export function AqiPanel({
                 >
                   <MetricFade contentKey={`ph-${metric}`} style={styles.heroInner}>
                     <Text style={styles.heroLabel}>
-                      {metricHeroLabel(metric, false, copy)}
+                      {metricHeroLabel(metric, false, content)}
                     </Text>
                     <View style={styles.heroRow}>
                       <Text style={[styles.heroValue, { fontSize: heroValueSize }]}>—</Text>
                       <Text style={styles.heroUnit}>{metric === 'aqi' ? 'AQI' : 'µg/m³'}</Text>
                     </View>
                     <View style={styles.badge}>
-                      <Text style={styles.badgeText}>{copy.panelNoData}</Text>
+                      <Text style={styles.badgeText}>{content.panelNoData}</Text>
                     </View>
                   </MetricFade>
                 </LinearGradient>
@@ -423,7 +458,7 @@ export function AqiPanel({
               <View style={styles.modernTop}>
                 <View style={styles.modernTopLeft}>
                   <Text style={styles.eyebrow}>
-                    {panel.isSensorReading ? copy.panelSensorReading : copy.panelAirQualityEstimate}
+                    {panel.isSensorReading ? content.panelSensorReading : content.panelAirQualityEstimate}
                   </Text>
                   <Text style={styles.coords}>
                     {selectedLabel ?? `${panel.lat.toFixed(5)}, ${panel.lon.toFixed(5)}`}
@@ -443,7 +478,7 @@ export function AqiPanel({
                     style={styles.heroInner}
                   >
                     <Text style={styles.heroLabel}>
-                      {metricHeroLabel(metric, panel.isSensorReading, copy)}
+                      {metricHeroLabel(metric, panel.isSensorReading, content)}
                     </Text>
                     <View style={styles.heroRow}>
                       <Text style={[styles.heroValue, { fontSize: heroValueSize }]}>
@@ -482,13 +517,13 @@ export function AqiPanel({
               {panel.kind === 'placeholder' ? (
                 <>
                   <MiniCard
-                    k={copy.panelClosestSensor}
+                    k={content.panelClosestSensor}
                     v="—"
-                    sub={copy.panelClickMapForSensor}
+                    sub={content.panelClickMapForSensor}
                     valueFontSize={cardValueSize}
                   />
                   <MiniCard
-                    k={copy.panelSensorDistance}
+                    k={content.panelSensorDistance}
                     v="—"
                     valueFontSize={cardValueSize}
                   />
@@ -496,7 +531,7 @@ export function AqiPanel({
               ) : (
                 <>
                   <MiniCard
-                    k={copy.panelClosestSensor}
+                    k={content.panelClosestSensor}
                     v={
                       panel.closest
                         ? metric === 'aqi'
@@ -507,7 +542,7 @@ export function AqiPanel({
                     valueFontSize={cardValueSize}
                   />
                   <MiniCard
-                    k={copy.panelSensorDistance}
+                    k={content.panelSensorDistance}
                     v={
                       panel.closest ? `${milesBetweenKm(panel.closest.distKm).toFixed(2)} mi` : '—'
                     }
@@ -534,11 +569,11 @@ export function AqiPanel({
             style={styles.reminderModalBackdrop}
             onPress={closeReminderModal}
             accessibilityRole="button"
-            accessibilityLabel={copy.panelDismissA11y}
+            accessibilityLabel={content.panelDismissA11y}
           />
           <View style={styles.reminderModalCard}>
-            <Text style={styles.reminderModalTitle}>{copy.reminderModalTitle}</Text>
-            <Text style={styles.reminderModalHint}>{copy.reminderModalHint}</Text>
+            <Text style={styles.reminderModalTitle}>{content.reminderModalTitle}</Text>
+            <Text style={styles.reminderModalHint}>{content.reminderModalHint}</Text>
             <View style={styles.reminderColorList}>
               {/* Band index 0 (Good) omitted — reminders start at Unhealthy for Sensitive Groups. */}
               {EPA_AQI_CATEGORY_BANDS.slice(1).map((row, i) => {
@@ -563,7 +598,7 @@ export function AqiPanel({
                       pressed && (saved ? styles.reminderColorRowPressedSaved : styles.reminderColorRowPressed),
                     ]}
                     accessibilityRole="button"
-                    accessibilityLabel={copy.reminderBandA11y(
+                    accessibilityLabel={content.reminderBandA11y(
                       localizedAqiCategoryLabel(row.cat.label, language),
                       row.lo,
                       row.hi,
@@ -584,8 +619,8 @@ export function AqiPanel({
               })}
             </View>
             <View style={styles.reminderCooldownBlock}>
-              <Text style={styles.reminderCooldownLabel}>{copy.reminderCooldownLabel}</Text>
-              <Text style={styles.reminderCooldownHint}>{copy.reminderCooldownHint}</Text>
+              <Text style={styles.reminderCooldownLabel}>{content.reminderCooldownLabel}</Text>
+              <Text style={styles.reminderCooldownHint}>{content.reminderCooldownHint}</Text>
               <View style={styles.reminderCooldownChips}>
                 {REMINDER_COOLDOWN_PRESETS.map((p) => {
                   const selected = reminderCooldownMinutes === p.minutes;
@@ -610,7 +645,7 @@ export function AqiPanel({
                       ]}
                       accessibilityRole="button"
                       accessibilityState={{ selected }}
-                      accessibilityLabel={copy.reminderCooldownA11yForMinutes(p.minutes)}
+                      accessibilityLabel={content.reminderCooldownA11yForMinutes(p.minutes)}
                     >
                       <Text
                         style={[
@@ -634,9 +669,9 @@ export function AqiPanel({
                 }}
                 style={styles.reminderClearBtn}
                 accessibilityRole="button"
-                accessibilityLabel={copy.reminderClearA11y}
+                accessibilityLabel={content.reminderClearA11y}
               >
-                <Text style={styles.reminderClearBtnText}>{copy.reminderClear}</Text>
+                <Text style={styles.reminderClearBtnText}>{content.reminderClear}</Text>
               </Pressable>
             ) : null}
           </View>
@@ -672,7 +707,7 @@ function CompactPanelBody({
   heroAccent,
   heroValueSize,
   cardValueSize,
-  copy,
+  content,
   language,
 }: {
   panel: PanelState;
@@ -682,13 +717,13 @@ function CompactPanelBody({
   heroAccent: string;
   heroValueSize: number;
   cardValueSize: number;
-  copy: MapScreenCopy;
+  content: MapScreenContent;
   language: AppLanguage;
 }) {
   if (panel.kind === 'oob') {
     return (
       <View style={styles.compactMsgBox}>
-        <Text style={styles.compactMsgBody}>{copy.panelOobBody}</Text>
+        <Text style={styles.compactMsgBody}>{content.panelOobBody}</Text>
         <Text style={styles.compactCoordsMono}>
           {panel.lat.toFixed(5)}, {panel.lon.toFixed(5)}
         </Text>
@@ -739,7 +774,7 @@ function CompactPanelBody({
             contentKey={`compact-hero-${metric}-${heroMainValue}-${ph ? 'ph' : okPanel ? panel.aqiCat.label : ''}`}
           >
             <Text style={styles.compactHeroLabel}>
-              {metricHeroLabel(metric, okPanel ? panel.isSensorReading : false, copy)}
+              {metricHeroLabel(metric, okPanel ? panel.isSensorReading : false, content)}
             </Text>
             <View style={styles.compactHeroValueRow}>
               <Text style={[styles.compactHeroValue, { fontSize: heroValueSize }]}>{heroMainValue}</Text>
@@ -747,7 +782,7 @@ function CompactPanelBody({
               <View style={styles.compactBadge}>
                 <Text style={styles.compactBadgeText} numberOfLines={1}>
                   {ph
-                    ? copy.panelNoData
+                    ? content.panelNoData
                     : metric === 'aqi'
                       ? localizedAqiCategoryLabel(panel.aqiCat.label, language)
                       : localizedAqiCategoryLabel(panel.predPm25Category.label, language)}
@@ -764,7 +799,7 @@ function CompactPanelBody({
           style={styles.compactCardsRow}
         >
           <MiniCard
-            k={copy.panelClosestSensor}
+            k={content.panelClosestSensor}
             v={
               ph
                 ? '—'
@@ -774,12 +809,12 @@ function CompactPanelBody({
                     : `${panel.closest.pm25.toFixed(1)} µg/m³`
                   : '—'
             }
-            sub={ph ? copy.panelClickMapForSensor : undefined}
+            sub={ph ? content.panelClickMapForSensor : undefined}
             valueFontSize={cardValueSize}
             compact
           />
           <MiniCard
-            k={copy.panelSensorDistance}
+            k={content.panelSensorDistance}
             v={
               ph || !panel.closest ? '—' : `${milesBetweenKm(panel.closest.distKm).toFixed(2)} mi`
             }

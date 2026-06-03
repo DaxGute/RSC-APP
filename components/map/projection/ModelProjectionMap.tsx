@@ -2,13 +2,17 @@
  * Model projection overlay entry: Mapbox UI when @rnmapbox/maps is linked,
  * otherwise an Expo Go modal. Props and types are defined in ModelProjectionMapMapbox.
  */
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, NativeModules, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { isMapboxNativeAvailable } from '../../../lib/mapboxNative';
 import type { ModelProjectionMapProps } from './ModelProjectionMapMapbox';
 
 export type { ModelProjectionMapProps } from './ModelProjectionMapMapbox';
+
+/** True when @rnmapbox/maps native module is linked (dev build), not in Expo Go. */
+function isMapboxNativeAvailable(): boolean {
+  return NativeModules.RNMBXModule != null;
+}
 
 /** Expo Go / non-Mapbox: dev-build instructions. Only `visible` and `onClose` are used. */
 function ModelProjectionMapExpoGoFallback({ visible, onClose }: ModelProjectionMapProps) {

@@ -7,17 +7,19 @@ import Mapbox from '@rnmapbox/maps';
 import { contours, type ContourMultiPolygon } from 'd3-contour';
 import type { FeatureCollection, MultiPolygon } from 'geojson';
 
-import type { CurrentKrigingRow } from '../../lib/database.types';
-import { pm25BreakpointCategory } from '../../lib/aqiUtils';
-import { PM25_CONTOUR_THRESHOLDS as pm25ContourThresholds } from '../../lib/airQualityBreakpoints';
+import type { CurrentKrigingRow } from '../../lib/shell/supabase';
+import {
+  PM25_CONTOUR_THRESHOLDS as pm25ContourThresholds,
+  pm25BreakpointCategory,
+} from '../../lib/shell/airQualityBreakpoints';
 import {
   gridXYToLonLat,
   pm25GridToContourFlat,
   rowsToPm25Grid2D,
-} from '../../lib/modeling/gridMath';
-import { resolveHeatmapGridRows } from '../../lib/resolveHeatmapGrid';
-import type { MapRegion } from '../../lib/mapRegionFromData';
-import type { SensorPoint } from '../../lib/sensorTypes';
+} from '../../lib/map/projection/modeling/gridMath';
+import { resolveHeatmapGridRows } from '../../lib/map/recomputeKriging';
+import type { MapRegion } from '../../lib/map/mapRegionFromData';
+import type { SensorPoint } from '../../lib/map/sensorTypes';
 
 /** Kriging grid input; optional gridOverride skips resolveHeatmapGridRows for projection maps. */
 type KrigingHeatmapLayerProps = {
