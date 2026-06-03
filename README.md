@@ -370,21 +370,19 @@ The mobile application currently computes interpolation client-side.
 There is no active current_kriging dependency.
 
 Implementation:
-Inverse Distance Weighting (IDW)
+Ordinary kriging with an exponential variogram (haversine distances in km)
 
 Characteristics:
-- Power = 2
-- Nearest-neighbor weighting
+- Variogram fitted from sensor pairs per recompute
+- Local neighborhood (default 8 neighbors; historical slots use 4)
 - 40 x 40 visualization grid
 - Bilinear sampling for tap estimates
-
-Although some files use historical “kriging” terminology, the active implementation is IDW-based interpolation.
 
 ### Heatmap Rendering Pipeline
 
 Sensor rows
 → SensorPoint conversion
-→ IDW interpolation
+→ Ordinary kriging interpolation
 → 40x40 PM2.5 grid
 → d3-contour generation
 → GeoJSON polygons

@@ -45,7 +45,7 @@ export interface CurrentKrigingRow {
   longitude: number;
   pm25: number | null;
   aqi: number | null;
-  /** IDW prediction variance for this grid cell (client-side recompute). */
+  /** Kriging prediction variance for this grid cell (client-side recompute). */
   kriging_variance: number | null;
   /** Pipeline timestamp for this surface (ISO 8601). */
   time: string;

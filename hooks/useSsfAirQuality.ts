@@ -32,8 +32,6 @@ const ROLLING_24H_TIME_WINDOW_BUFFER_MS = 15 * 60 * 1000;
 const TIMELINE_HOURS_BACK = 24;
 /** Grid resolution for client-side kriging on historical slots (matches heatmap). */
 const HISTORICAL_KRIGING_GRID_STEPS = HEATMAP_GRID_STEPS;
-/** Nearest sensors used per kriging cell when recomputing offline. */
-const HISTORICAL_KRIGING_NEIGHBORS = 4;
 
 /** Query window with buffer so pipeline `time` values and client clock skew do not clip edge rows. */
 function rollingRecordedTimeBounds(): { fromIso: string; toIso: string } {
@@ -265,7 +263,6 @@ export function useSsfAirQuality(): SsfAirQualityState & { refresh: () => Promis
     return recomputeKrigingFromSensors(sensorRows, recordedTime, {
       latSteps: HISTORICAL_KRIGING_GRID_STEPS,
       lonSteps: HISTORICAL_KRIGING_GRID_STEPS,
-      maxNeighbors: HISTORICAL_KRIGING_NEIGHBORS,
     });
   }, []);
 
