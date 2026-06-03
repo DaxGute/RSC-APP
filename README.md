@@ -1,111 +1,682 @@
 <img width="300" height="600" alt="Simulator Screenshot - iPhone 17 Pro - 2026-05-17 at 18 16 29" src="https://github.com/user-attachments/assets/1f34fe67-5d5f-4890-942a-4b293fd33b66" />
 <img width="300" height="600" alt="Simulator Screenshot - iPhone 17 Pro - 2026-05-17 at 18 16 40" src="https://github.com/user-attachments/assets/c74ec96e-0a51-4f46-bb36-16552885b342" />
 <img width="300" height="600" alt="Simulator Screenshot - iPhone 17 Pro - 2026-05-17 at 18 16 59" src="https://github.com/user-attachments/assets/e599c81f-dfa3-4037-97e8-ac188a7b647b" />
-
-
-# Rise South City App
-
-Community-centered real-time air quality intelligence for South San Francisco.
-
-Built to make hyperlocal AQI and PM2.5 data accessible, interpretable, and actionable through live sensor ingestion, interpolation, alerts, and mobile-first visualization.
-
----
+# Rise South City (RSC-APP)
 
 ## Overview
 
-Rise South City (RSC) is an environmental health platform focused on surfacing neighborhood-level air quality conditions using live sensor networks and geospatial interpolation.
+Rise South City is a hyperlocal air-quality monitoring, visualization, education, and forecasting platform focused on South San Francisco and surrounding communities. The project combines community sensor networks, weather forecasting, spatial interpolation, historical analytics, health education, and proactive notifications into a mobile application built with Expo React Native and Supabase.
 
-The system ingests air quality data from:
-- PurpleAir sensors
-- Clarity sensors
-- Derived AQI calculations using EPA PM2.5 breakpoints
+Core goals:
 
-The app then:
-- Normalizes and stores readings
-- Interpolates pollution across South San Francisco
-- Generates live AQI heatmaps
-- Provides health-oriented visualization
-- Supports threshold-based push notifications
-
-The goal is to bridge the gap between raw environmental sensor data and meaningful public understanding.
+- Provide neighborhood-scale PM2.5 visibility
+- Translate raw sensor measurements into understandable AQI information
+- Support historical exploration and trend analysis
+- Deliver location-specific AQI alerts
+- Explore short-horizon wind-informed PM2.5 projections
+- Serve a bilingual (English/Spanish) audience
 
 ---
 
-## Features
+## Major Features
 
-### Live Sensor Ingestion
-- Pulls real-time PM2.5 data from distributed sensor networks
-- Supports both PurpleAir and Clarity ecosystems
-- Automatic normalization of heterogeneous sensor formats
+### Live AQI Map
+- Real-time PM2.5 visualization
+- Sensor overlays from PurpleAir and Clarity
+- Continuous interpolated air-quality surface
+- Tap-to-inspect AQI and PM2.5 values
+- EPA category coloring
 
-### AQI Mapping
-- Converts PM2.5 concentrations into EPA AQI categories
-- Health-focused visual encoding
-- Continuous interpolation rather than isolated sensor dots
+### Historical Timeline
+- Rolling 24-hour timeline scrubber
+- Historical snapshot playback
+- Day and month exploration modes
+- Historical sensor reconstruction
 
-### Geospatial Interpolation
-- Ordinary kriging / IDW-based interpolation pipeline
-- Produces gridded AQI estimates across South San Francisco
-- Generates smooth heatmap overlays from sparse sensor observations
+### Analytics & Graphs
+- Rolling 7-day trends
+- AQI calendar visualization
+- Monthly PM2.5 summaries
+- Year-over-year historical views
 
-### Interactive Mobile UI
-- Real-time AQI visualization
-- Predicted AQI lookup by location
-- Dynamic map overlays
-- Health category legends and contextual information
+### AQI Alerts
+- User-selected alert location
+- Threshold-based notifications
+- Configurable cooldown periods
+- Expo Push integration
 
-### Push Notifications
-- User-configurable AQI thresholds
-- Location-specific alerting
-- Notification cooldown system to prevent spam
+### Education Hub
+- AQI education
+- PM2.5 health impacts
+- Protective actions
+- Embedded educational videos
+- Bilingual content
 
-### Historical Aggregation
-- Stores daily AQI summaries
-- Maintains rolling live sensor windows
-- Supports future trend analysis and longitudinal visualization
+### Experimental Projection Model
+- Wind-informed PM2.5 projection
+- Historical analog matching
+- Trend-based forecasting
+- Up to +5 hour outlook
+- Explicitly labeled experimental
 
 ---
 
-## Tech Stack
+## Geographic Coverage
+
+Bounding Box:
+
+Northwest:
+- Latitude: 37.7000
+- Longitude: -122.5000
+
+Southeast:
+- Latitude: 37.6000
+- Longitude: -122.3500
+
+Coverage includes:
+- South San Francisco
+- San Bruno
+- Brisbane
+- Northern Daly City
+- Nearby industrial corridors
+
+---
+
+## Technology Stack
 
 ### Frontend
-- React Native
 - Expo
+- React Native
 - TypeScript
 - Mapbox
+- React Native SVG
+- React Native Calendars
+- React Native WebView
+- AsyncStorage
 - Expo Notifications
 
-### Backend / Infrastructure
-- Supabase
+### Backend
+- Supabase PostgreSQL
+- Supabase Auth
 - Supabase Edge Functions
-- PostgreSQL
+- PostgREST
 - pg_cron
 
-### Data / Scientific Computing
-- Python
-- PyKrige
-- NumPy
-- Pandas
-
-### APIs
-- PurpleAir API
-- Clarity API
+### Data Sources
+- PurpleAir
+- Clarity
+- Open-Meteo
 
 ---
 
-## Architecture
+## High-Level Architecture
 
-```text
-Sensors
-   ↓
-Ingestion Pipeline
-   ↓
-Normalization Layer
-   ↓
-Supabase Storage
-   ↓
-Interpolation Engine
-   ↓
-currentKriging Table
-   ↓
-Mobile App Visualization + Alerts<img width="1206" height="2622" alt="Simulator Screenshot - iPhone 17 Pro - 2026-05-17 at 18 16 29" src="https://github.com/user-attachments/assets/b23b40be-e517-4bca-9c22-b07f0361ccc2" />
+PurpleAir + Clarity sensor networks provide raw PM2.5 measurements.
+
+Hourly ingestion normalizes and stores readings in Supabase.
+
+Daily aggregation creates long-term historical records.
+
+Wind forecasts are ingested separately and stored in a spatial forecast grid.
+
+The mobile app reads sensor data, computes interpolation client-side, generates map visualizations, powers historical exploration, and drives experimental projections.
+
+User notification settings are stored in Supabase and evaluated by scheduled alert logic.
+
+---
+
+## Database Schema
+
+### purple_air
+
+Purpose:
+Raw PurpleAir sensor history.
+
+Primary Key:
+(sensor_index, time)
+
+Important Fields:
+- sensor_index
+- name
+- latitude
+- longitude
+- pm25
+- aqi
+- humidity
+- temperature
+- time
+
+RLS:
+Public read access.
+
+### clarity
+
+Purpose:
+Raw Clarity sensor history.
+
+Primary Key:
+(sensor_index, time)
+
+Important Fields:
+- sensor_index
+- name
+- latitude
+- longitude
+- pm25
+- aqi
+- humidity
+- temperature
+- time
+
+RLS:
+Public read access.
+
+### daily_sensor_aqi
+
+Purpose:
+Daily aggregated sensor statistics.
+
+Primary Key:
+(source, sensor_index, time)
+
+Fields:
+- source
+- sensor_index
+- name
+- latitude
+- longitude
+- pm25
+- aqi
+- reading_count
+- time
+
+Indexes support time-series queries and historical exploration.
+
+### forecast_wind_grid
+
+Purpose:
+Wind forecast support for projection modeling.
+
+Primary Key:
+(forecast_time_utc, lat, lon)
+
+Fields:
+- forecast_time_utc
+- lat
+- lon
+- wind_speed_mps
+- wind_direction_deg
+- fetched_at
+
+### user_notification_settings
+
+Purpose:
+User-specific alert preferences.
+
+Primary Key:
+(user_id)
+
+Fields:
+- notification_on
+- notification_lat
+- notification_lng
+- notification_threshold
+- notification_cooldown
+- expo_push_token
+- last_notified_at
+
+RLS:
+Users may only access their own row.
+
+---
+
+## Edge Functions
+
+### update-air-data
+
+Schedule:
+Hourly
+
+Purpose:
+Ingest PurpleAir and Clarity readings.
+
+Responsibilities:
+- Fetch sensor measurements
+- Normalize sensor formats
+- Apply quality controls
+- Store readings in purple_air and clarity
+
+Data Quality Filtering:
+- Neighbor search within 2 km
+- Minimum 3 nearby sensors
+- Median computation
+- MAD computation
+- Modified Z-score filtering
+- Reject strong local outliers
+
+Raw retention is approximately seven days.
+
+### update-forecast-wind-grid
+
+Schedule:
+Every 10 minutes
+
+Purpose:
+Maintain wind forecast data.
+
+Characteristics:
+- 20 x 20 grid
+- 400 spatial locations
+- 5-hour forecast horizon
+- Forecast cleanup logic
+- Upsert-based refresh
+
+Output:
+forecast_wind_grid
+
+### check-aqi-alerts
+
+Schedule:
+Backend documentation indicates hourly evaluation.
+
+Purpose:
+Evaluate alert thresholds and trigger notifications.
+
+Inputs:
+- user_notification_settings
+- Current AQI estimation source
+
+Capabilities:
+- Threshold detection
+- Cooldown enforcement
+- Expo Push delivery
+- Notification tracking
+
+### aggregate-daily-aqi
+
+Schedule:
+Daily
+
+Purpose:
+Convert high-frequency measurements into long-term daily summaries.
+
+Outputs:
+daily_sensor_aqi
+
+Aggregation:
+- Average PM2.5
+- Average AQI
+- Reading counts
+- Sensor metadata
+
+---
+
+## Mobile Application Architecture
+
+### Root Application
+
+App.tsx serves as the application shell.
+
+Responsibilities:
+- Tab navigation
+- Shared state initialization
+- Projection modal management
+- Anonymous authentication bootstrap
+
+Tabs:
+1. Map
+2. Graph
+3. Education
+
+### Shared State
+
+useSsfAirQuality is the primary data hook.
+
+Responsibilities:
+- Poll sensor data
+- Manage timeline state
+- Build interpolation inputs
+- Manage historical snapshots
+- Supply map and graph screens
+
+Polling interval:
+30 seconds
+
+---
+
+## Map System
+
+### Live Map
+
+Components:
+- SsfAirQualityScreen
+- SsfMapMapbox
+- KrigingHeatmapLayer
+- AqiPanel
+
+Capabilities:
+- Sensor visualization
+- Heatmap rendering
+- AQI inspection
+- Historical scrubbing
+- Alert placement
+
+### Interpolation
+
+Important note:
+
+The mobile application currently computes interpolation client-side.
+
+There is no active current_kriging dependency.
+
+Implementation:
+Inverse Distance Weighting (IDW)
+
+Characteristics:
+- Power = 2
+- Nearest-neighbor weighting
+- 40 x 40 visualization grid
+- Bilinear sampling for tap estimates
+
+Although some files use historical “kriging” terminology, the active implementation is IDW-based interpolation.
+
+### Heatmap Rendering Pipeline
+
+Sensor rows
+→ SensorPoint conversion
+→ IDW interpolation
+→ 40x40 PM2.5 grid
+→ d3-contour generation
+→ GeoJSON polygons
+→ Mapbox Fill Layers
+
+---
+
+## Historical Timeline System
+
+### Timeline Discovery
+
+Pipeline timestamps are collected from:
+- PurpleAir
+- Clarity
+
+Timeline modes:
+- Live
+- Rolling 24-hour
+- Historical day
+- Historical month
+
+### Caching
+
+Historical snapshots are cached in-memory to reduce recomputation and network requests.
+
+### Historical Reconstruction
+
+When viewing historical data:
+
+- Historical sensor rows are loaded
+- Interpolation is recomputed
+- Historical map state is reconstructed
+
+---
+
+## Graph System
+
+### Rolling Trends
+
+Displays:
+- Hourly PM2.5 behavior
+- Weekly trends
+
+### AQI Calendar
+
+Color-coded daily AQI history.
+
+### Monthly Analytics
+
+Month-level breakdowns and comparisons.
+
+### Yearly Analysis
+
+Aggregated PM2.5 summaries by month.
+
+---
+
+## Alert System
+
+### User Workflow
+
+1. Enter alert placement mode
+2. Select location
+3. Choose AQI threshold
+4. Choose cooldown period
+5. Save settings
+
+### Storage
+
+Preferences are written to:
+user_notification_settings
+
+### Notification Logic
+
+Inputs:
+- User location
+- Threshold
+- Cooldown
+- Current AQI estimate
+
+Behavior:
+- Detect threshold crossings
+- Enforce cooldown
+- Deliver Expo Push notifications
+
+---
+
+## Projection Model
+
+### Purpose
+
+Provide an experimental short-term PM2.5 outlook.
+
+### Forecast Horizon
+
+0 to +5 hours
+
+### Inputs
+
+- Current interpolated PM2.5 grid
+- Historical sensor behavior
+- Wind forecasts
+- Recent trends
+
+### Historical Analog Library
+
+Built from approximately seven days of recent history.
+
+Characteristics:
+- Time subsampling
+- Future matching windows
+- Delta computation
+- Historical priors
+
+### Wind Support
+
+Wind forecasts come from forecast_wind_grid.
+
+Characteristics:
+- 20x20 wind lattice
+- Hourly forecast samples
+- Light advection influence
+
+### Confidence
+
+Projection confidence considers:
+- Sensor count
+- Historical sample count
+- Trend stability
+- Horizon length
+
+### Important Disclaimer
+
+The projection system is an experimental research preview and should not be interpreted as an official air-quality forecast.
+
+---
+
+## Education System
+
+The Education Hub provides:
+
+- AQI explanations
+- PM2.5 health effects
+- Protective actions
+- Filter and mask information
+- Educational videos
+- Bilingual educational resources
+
+---
+
+## Authentication & Security
+
+### Anonymous Auth
+
+Anonymous Supabase sessions are used for:
+- Notification registration
+- User-specific alert preferences
+
+### Public Data
+
+Public read access:
+- purple_air
+- clarity
+- daily_sensor_aqi
+- forecast_wind_grid
+
+### Private Data
+
+Protected:
+- user_notification_settings
+
+Users can only access their own notification settings.
+
+---
+
+## Data Lifecycle
+
+PurpleAir API
+\
+ \
+  update-air-data
+ /
+/
+Clarity API
+
+↓
+
+purple_air
+clarity
+
+↓
+
+aggregate-daily-aqi
+
+↓
+
+daily_sensor_aqi
+
+Parallel:
+
+Open-Meteo
+↓
+update-forecast-wind-grid
+↓
+forecast_wind_grid
+
+Alerts:
+
+user_notification_settings
+↓
+check-aqi-alerts
+↓
+Expo Push Notifications
+
+---
+
+## Environment Variables
+
+Required:
+
+EXPO_PUBLIC_SUPABASE_URL
+
+EXPO_PUBLIC_SUPABASE_ANON_KEY
+
+EXPO_PUBLIC_MAPBOX_TOKEN
+
+---
+
+## Local Development
+
+1. Install dependencies
+2. Configure environment variables
+3. Connect Supabase project
+4. Run:
+
+npm install
+
+npm start
+
+For Mapbox:
+
+npx expo prebuild
+
+npx expo run:ios
+
+---
+
+## Production Deployment
+
+Requirements:
+
+- Supabase project
+- Edge Functions deployed
+- pg_cron schedules enabled
+- EAS build configuration
+- Mapbox token
+- Expo Push configuration
+
+---
+
+## Known Limitations
+
+- Projection system is experimental
+- Accuracy depends on sensor density
+- Community sensors may fail or go offline
+- Historical interpolation is reconstructed from available observations
+- Forecast quality depends on available wind and sensor data
+
+---
+
+## Future Work
+
+- Improved forecasting methodology
+- Additional pollutants
+- Expanded geographic coverage
+- Enhanced uncertainty modeling
+- More sophisticated analog matching
+- Operational monitoring dashboards
+- Expanded community education resources
+
+---
+
+## Contributors Documentation Notes
+
+Important architectural clarification:
+
+Older documentation references a current_kriging table.
+
+The current production mobile application performs interpolation client-side from sensor observations and should not be documented as relying on current_kriging unless a future backend service reintroduces it.
+
+This README reflects the architecture reconstructed from:
+- Frontend repository audit
+- Deep architecture audit
+- Supabase schema audit
+- Backend Edge Function audit
