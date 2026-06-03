@@ -1,6 +1,12 @@
-<img width="300" height="600" alt="Simulator Screenshot - iPhone 17 Pro - 2026-05-17 at 18 16 29" src="https://github.com/user-attachments/assets/1f34fe67-5d5f-4890-942a-4b293fd33b66" />
-<img width="300" height="600" alt="Simulator Screenshot - iPhone 17 Pro - 2026-05-17 at 18 16 40" src="https://github.com/user-attachments/assets/c74ec96e-0a51-4f46-bb36-16552885b342" />
-<img width="300" height="600" alt="Simulator Screenshot - iPhone 17 Pro - 2026-05-17 at 18 16 59" src="https://github.com/user-attachments/assets/e599c81f-dfa3-4037-97e8-ac188a7b647b" />
+<img width="1728" height="973" alt="Screenshot 2026-06-02 at 8 38 32 PM" src="https://github.com/user-attachments/assets/fd490bcb-c0d3-4e34-b17a-897ca9893d3f" />
+<img width="1728" height="971" alt="Screenshot 2026-06-02 at 8 38 45 PM" src="https://github.com/user-attachments/assets/f0cb79b0-eb9f-418e-9aaa-c8dda2bcb252" />
+<img width="1728" height="972" alt="Screenshot 2026-06-02 at 8 38 56 PM" src="https://github.com/user-attachments/assets/172d1eb9-4503-424f-9883-603e1b103d20" />
+<img width="1728" height="971" alt="Screenshot 2026-06-02 at 8 39 09 PM" src="https://github.com/user-attachments/assets/9969a97d-ef61-49d6-9d18-6d1f9b59d09b" />
+<img width="1728" height="970" alt="Screenshot 2026-06-02 at 8 39 20 PM" src="https://github.com/user-attachments/assets/316e9df7-3e00-4290-95de-8ff95dad277f" />
+<img width="1728" height="970" alt="Screenshot 2026-06-02 at 8 39 32 PM" src="https://github.com/user-attachments/assets/d2fb0fa0-f2ae-4577-b530-d65d171f7dcc" />
+<img width="1728" height="971" alt="Screenshot 2026-06-02 at 8 39 43 PM" src="https://github.com/user-attachments/assets/447e21dd-429f-4c28-96aa-e1f3146ee097" />
+
+
 # Rise South City (RSC-APP)
 
 ## Overview
@@ -367,8 +373,6 @@ Important note:
 
 The mobile application currently computes interpolation client-side.
 
-There is no active current_kriging dependency.
-
 Implementation:
 Inverse Distance Weighting (IDW)
 
@@ -670,11 +674,6 @@ Requirements:
 ## Contributors Documentation Notes
 
 Important architectural clarification:
-
-Older documentation references a current_kriging table.
-
-The current production mobile application performs interpolation client-side from sensor observations and should not be documented as relying on current_kriging unless a future backend service reintroduces it.
-
 This README reflects the architecture reconstructed from:
 - Frontend repository audit
 - Deep architecture audit
