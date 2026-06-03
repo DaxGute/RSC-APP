@@ -155,4 +155,3 @@ Updated versions will be posted at the Privacy Policy URL associated with the ap
 For questions, support requests, or privacy-related inquiries, please contact:
 
 **Rise South City**  
-Email: YOUR_EMAIL_HERE
