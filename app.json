@@ -3,7 +3,7 @@
     "name": "RSC-APP",
     "slug": "rsc-app",
     "owner": "dxgt",
-    "version": "1.4.1",
+    "version": "1.5.1",
     "orientation": "portrait",
     "icon": "./assets/rise-south-city-logo.png",
     "userInterfaceStyle": "light",
@@ -17,7 +17,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.rscapp.metric",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationWhenInUseUsageDescription": "The Mapbox mapping SDK includes location APIs. Rise South City does not collect or use your location."
       }
     },
     "android": {
