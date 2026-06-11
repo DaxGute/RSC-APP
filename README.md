@@ -677,3 +677,4 @@ This README reflects the architecture reconstructed from:
 - Deep architecture audit
 - Supabase schema audit
 - Backend Edge Function audit
+Files and audits were created and commented using AI tools with extensive human supervision.
