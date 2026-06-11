@@ -1,10 +1,9 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rise AQI Support</title>
+    <title>Rise South City Support</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -15,89 +14,190 @@
             color: #333;
         }
 
-```
-    h1 {
-        color: #2c3e50;
-    }
+        h1 {
+            color: #2c3e50;
+        }
 
-    .card {
-        background: #f8f9fa;
-        padding: 20px;
-        border-radius: 10px;
-        margin: 20px 0;
-    }
+        h2 {
+            color: #34495e;
+            margin-top: 0;
+        }
 
-    a {
-        color: #007aff;
-        text-decoration: none;
-    }
+        .card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
 
-    a:hover {
-        text-decoration: underline;
-    }
-</style>
-```
+        .faq-item {
+            margin-bottom: 1.25em;
+        }
 
+        .faq-item:last-child {
+            margin-bottom: 0;
+        }
+
+        ul {
+            padding-left: 1.25em;
+        }
+
+        a {
+            color: #007aff;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .disclaimer {
+            font-size: 0.95em;
+            color: #555;
+        }
+    </style>
 </head>
 <body>
 
-```
-<h1>Rise AQI Support</h1>
+    <h1>Rise South City Support</h1>
 
-<p>
-    Thank you for using Rise AQI. If you have questions, encounter a bug,
-    or would like to provide feedback, please contact us using the information below.
-</p>
-
-<div class="card">
-    <h2>Contact Support</h2>
     <p>
-        Email:
-        <a href="mailto:daxtongute@gmail.com">daxtongute@gmail.com</a>
-    </p>
-    <p>
-        We aim to respond within 2–5 business days.
-    </p>
-</div>
-
-<div class="card">
-    <h2>Frequently Asked Questions</h2>
-
-    <p><strong>Where does Rise AQI get its air quality data?</strong></p>
-    <p>
-        Rise AQI uses publicly available air quality monitoring data and
-        environmental data sources to provide current conditions and forecasts.
+        Rise South City (Rise AQI) is a hyperlocal air-quality monitoring, visualization,
+        education, and forecasting app for South San Francisco and surrounding communities.
+        It combines community sensor networks, weather forecasting, historical analytics,
+        health education, and proactive notifications into a bilingual (English/Spanish)
+        mobile experience.
     </p>
 
-    <p><strong>I found a bug. What should I do?</strong></p>
-    <p>
-        Please email a description of the issue, your device model,
-        iOS version, and any screenshots that may help us reproduce the problem.
-    </p>
+    <div class="card">
+        <h2>About the App</h2>
+        <p>Rise South City helps residents understand neighborhood-scale air quality through:</p>
+        <ul>
+            <li><strong>Live AQI Map</strong> — Real-time PM2.5 visualization with PurpleAir and Clarity sensor overlays, interpolated air-quality surfaces, and EPA category coloring</li>
+            <li><strong>Historical Timeline</strong> — Rolling 24-hour playback, day and month exploration, and historical sensor reconstruction</li>
+            <li><strong>Analytics &amp; Graphs</strong> — 7-day trends, AQI calendar, monthly summaries, and year-over-year views</li>
+            <li><strong>AQI Alerts</strong> — Location-specific threshold notifications with configurable cooldown periods</li>
+            <li><strong>Education Hub</strong> — AQI education, PM2.5 health impacts, protective actions, and embedded videos</li>
+            <li><strong>Experimental Projection Model</strong> — Wind-informed PM2.5 outlook up to +5 hours (research preview only)</li>
+        </ul>
+    </div>
 
-    <p><strong>Can I request a feature?</strong></p>
-    <p>
-        Yes. Feature requests and feedback are welcome via email.
-    </p>
-</div>
+    <div class="card">
+        <h2>Geographic Coverage</h2>
+        <p>
+            The app covers South San Francisco, San Bruno, Brisbane, northern Daly City,
+            and nearby industrial corridors within a focused bounding box in the
+            South San Francisco Bay Area.
+        </p>
+    </div>
 
-<div class="card">
-    <h2>Privacy</h2>
-    <p>
-        Please refer to our Privacy Policy for information about data usage
-        and privacy practices.
-    </p>
-    <p>
-        <a href="REPLACE_WITH_PRIVACY_POLICY_URL">
-            Privacy Policy
-        </a>
-    </p>
-</div>
+    <div class="card">
+        <h2>Contact Support</h2>
+        <p>
+            Email:
+            <a href="mailto:daxtongute@gmail.com">daxtongute@gmail.com</a>
+        </p>
+        <p>
+            We aim to respond within 2–5 business days.
+        </p>
+    </div>
 
-<p>
-    © 2026 Rise AQI
-</p>
-```
+    <div class="card">
+        <h2>Frequently Asked Questions</h2>
+
+        <div class="faq-item">
+            <p><strong>Where does Rise South City get its air quality data?</strong></p>
+            <p>
+                Live readings come from dozens of local community sensors on the
+                <strong>PurpleAir</strong> and <strong>Clarity</strong> networks deployed
+                across South San Francisco and nearby communities. These measurements are
+                ingested hourly, normalized, and filtered with quality controls before
+                being displayed on the map. Wind forecast data from
+                <strong>Open-Meteo</strong> supports the experimental projection model.
+                Daily aggregated summaries are stored for long-term historical exploration.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <p><strong>How are map values calculated?</strong></p>
+            <p>
+                The app computes neighborhood-scale PM2.5 estimates on your device using
+                ordinary kriging interpolation from nearby sensor readings. Tap anywhere on
+                the map to inspect the estimated AQI and PM2.5 at that location. Accuracy
+                depends on sensor density and availability in your area.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <p><strong>How do AQI alerts work?</strong></p>
+            <p>
+                You can choose a location on the map, set an AQI threshold, and pick a
+                cooldown period. When estimated air quality at your selected location crosses
+                your threshold, the app sends a push notification. Alert preferences are
+                stored securely and evaluated on a regular schedule.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <p><strong>What is the projection model?</strong></p>
+            <p class="disclaimer">
+                The short-term PM2.5 projection (0 to +5 hours) is an
+                <strong>experimental research preview</strong>. It combines current sensor
+                conditions, recent trends, historical analogs, and wind forecasts. It should
+                <strong>not</strong> be interpreted as an official air-quality forecast.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <p><strong>Why do readings sometimes look missing or outdated?</strong></p>
+            <p>
+                Community sensors may go offline, fail, or report outliers that are filtered
+                out during quality control. Historical views are reconstructed from available
+                observations, so gaps may appear when sensor coverage is limited.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <p><strong>Is the app available in Spanish?</strong></p>
+            <p>
+                Yes. Rise South City is designed for a bilingual English/Spanish audience,
+                including educational content in the Education Hub.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <p><strong>I found a bug. What should I do?</strong></p>
+            <p>
+                Please email a description of the issue, your device model, iOS version,
+                and any screenshots that may help us reproduce the problem.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <p><strong>Can I request a feature?</strong></p>
+            <p>
+                Yes. Feature requests and feedback are welcome via email.
+            </p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Privacy</h2>
+        <p>
+            Rise South City uses anonymous authentication for alert registration and stores
+            only the notification preferences you configure (location, threshold, cooldown,
+            and push token). Air quality measurements come from third-party sensor and
+            weather providers such as PurpleAir, Clarity, and Open-Meteo; we do not
+            continuously track your location in the background.
+        </p>
+        <p>
+            <a href="PRIVACY.md">Privacy Policy</a>
+        </p>
+    </div>
+
+    <p>
+        © 2026 Rise South City
+    </p>
 
 </body>
 </html>
