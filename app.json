@@ -1,9 +1,9 @@
 {
   "expo": {
-    "name": "RSC-APP",
+    "name": "Rise AQI",
     "slug": "rsc-app",
     "owner": "dxgt",
-    "version": "1.5.1",
+    "version": "1.5.3",
     "orientation": "portrait",
     "icon": "./assets/rise-south-city-logo.png",
     "userInterfaceStyle": "light",
